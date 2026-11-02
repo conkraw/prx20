@@ -1,0 +1,14 @@
+.streamlit/secrets.toml
+secrets.toml
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.tab
+*.tsv
+*.csv
+*.xlsx
+*.enc
+local_data/

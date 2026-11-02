@@ -1,0 +1,200 @@
+[
+  {
+    "id": "form_7ef2006a080a62c6fa8595fa",
+    "name": "Acutes EPA",
+    "questions": [
+      {
+        "id": "140827",
+        "text": "How much time did you spend working with this resident?",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "140828",
+        "text": "Obtains focused histories, performs targeted physical examinations, and reviews relevant records.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140829",
+        "text": "Develops an appropriate differential diagnosis and diagnostic plan using sound clinical reasoning.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140847",
+        "text": "Creates evidence-based management plans that are individualized to the patient's clinical condition and illness severity; uses shared decision-making when appropriate.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140848",
+        "text": "Explains the assessment, diagnosis, treatment plan, return precautions, and follow-up recommendations clearly to patients and caregivers, confirming understanding.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140830",
+        "text": "Recognizes when specialty consultation, emergency department referral, or hospital admission is indicated and initiates timely referral with clear communication.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140831",
+        "text": "Adapts the evaluation and management for children with chronic medical conditions, medical technology, or special health care needs who present with acute illness.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140833",
+        "text": "Identifies and addresses preventive care needs during acute visits when appropriate (e.g., immunizations, health maintenance, anticipatory guidance).",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140834",
+        "text": "Works collaboratively with faculty, nursing staff, medical assistants, and other members of the health care team to provide efficient, family-centered care.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140835",
+        "text": "Provides appropriate supervision, teaching, and feedback to junior residents and medical students while maintaining efficient patient care.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "140836",
+        "text": "MAINTAINING PROFESSIONALISM: Resident Recognizes a Sense of Duty to Patients, Upholds Ethical Standards, and Performs Professional Obligations Promptly and Accurately. (Unsatisfactory Requires a Comment)",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "140837",
+        "text": "Please Rate the Resident’s CLINICAL PERFORMANCE on the Rotation as Observed and Perceived by You. (Marginal and Unsatisfactory Answers will Require a Comment. If the Overall Performance was Satisfactory but You have MAJOR Concerns, Please Comment).",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "140838",
+        "text": "Were the contents of this evaluation discussed with the resident?",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "140839",
+        "text": "What specific next steps or strategies will help this resident advance to the next level?",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "140840",
+        "text": "Overall Comments:",
+        "tags": "",
+        "include": false
+      }
+    ],
+    "score_map": {
+      "1": 1.0,
+      "2": 2.0,
+      "3": 3.0,
+      "4": 4.0,
+      "5": 5.0,
+      "6": null
+    },
+    "scoring_confirmed": false
+  },
+  {
+    "id": "form_59d7f9dcdb33f93fc3e364de",
+    "name": "Adolescent Medicine EPA",
+    "questions": [
+      {
+        "id": "139406",
+        "text": "How much time did you spend working with this resident?",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "139407",
+        "text": "Gathers essential information through a developmentally appropriate history including psychosocial screening (e.g., risk behaviors, substance use, sexual health, mental health, eating concerns, etc.), physical examination, and review of information in the health record.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "139408",
+        "text": "Uses clinical reasoning to develop a differential diagnosis for common adolescent concerns (e.g., eating disorders, menstrual disorders, STIs, substance use, headaches, sports injuries).",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "139429",
+        "text": "Develops appropriate evidence-based and individualized management plans for common adolescent medical and behavioral conditions using shared decision-making.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "139410",
+        "text": "Recognizes when referral or multidisciplinary care is needed and collaborates effectively with specialists or community resources (e.g., eating disorder programs, mental health services, substance use treatment programs).",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "139413",
+        "text": "Communicates sensitive topics with adolescents in a respectful and developmentally appropriate manner, building therapeutic relationships. Involves caretakers when appropriate.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "139417",
+        "text": "Maintains clear, accurate, and timely documentation of clinic encounters.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "139418",
+        "text": "Demonstrates engagement in learning through preparation for clinic, participation in discussions and literature searches, and completion of assigned presentations or teaching activities.",
+        "tags": "",
+        "include": true
+      },
+      {
+        "id": "139420",
+        "text": "MAINTAINING PROFESSIONALISM: Recognizes a sense of duty to patients, upholds ethical standards, and performs professional obligations promptly and accurately. (Unsatisfactory Requires a Comment).",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "139421",
+        "text": "Please Rate the Resident’s CLINICAL PERFORMANCE on the Rotation as Observed and Perceived by You. (Marginal and Unsatisfactory Answers will Require a Comment. If the Overall Performance was Satisfactory but You have MAJOR Concerns, Please Comment).",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "139422",
+        "text": "Were the contents of this evaluation discussed with the resident?",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "139430",
+        "text": "What Specific Next Steps or Strategies will Help This Resident Advance to the Next Level:",
+        "tags": "",
+        "include": false
+      },
+      {
+        "id": "139423",
+        "text": "Overall Comments:",
+        "tags": "",
+        "include": false
+      }
+    ],
+    "score_map": {
+      "1": 1.0,
+      "2": 2.0,
+      "3": 3.0,
+      "4": 4.0,
+      "5": 5.0,
+      "6": null
+    },
+    "scoring_confirmed": false
+  }
+]
