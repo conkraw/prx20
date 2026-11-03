@@ -194,8 +194,8 @@ def report_context(state: dict, year: int, start_month: int, months: list[int], 
     }
 
 
-def current_report_view(state: dict) -> tuple[pd.DataFrame, dict]:
-    """Rebuild the last Dashboard selection from current saved data on any page."""
+def current_report_view(state: dict, *, all_residents: bool = False) -> tuple[pd.DataFrame, dict]:
+    """Rebuild the Dashboard selection, optionally including every resident."""
     rows = score_rows(state)
     start_month = state["settings"].get("academic_year_start_month", 7)
     now = datetime.now(ZoneInfo("America/New_York"))
@@ -207,38 +207,57 @@ def current_report_view(state: dict) -> tuple[pd.DataFrame, dict]:
     basis = preferences.get("date_basis", "session_date")
     selected = filter_rows(
         rows, academic_year=year, start_month=start_month, months=months, date_basis=basis,
-        residents=preferences.get("residents") or None,
+        residents=None if all_residents else preferences.get("residents") or None,
         form_ids=preferences.get("form_ids") or None,
     )
     return selected, report_context(state, year, start_month, months, basis, selected)
 
 
+def pdf_download_button(state: dict, rows: pd.DataFrame, context: dict, *, label: str,
+                        key: str, filename: str, help_text: str) -> None:
+    """Bind one deferred download to an immutable, session-private snapshot."""
+    if rows.empty:
+        st.download_button(label, data=b"", file_name=filename, mime="application/pdf",
+                           disabled=True, width="stretch", key=key, help=help_text)
+        return
+    rows_snapshot = rows.copy(deep=True)
+    used_forms = set(rows["form_id"].unique())
+    forms_snapshot = copy.deepcopy({key: value for key, value in state["forms"].items()
+                                    if key in used_forms})
+    context_snapshot = copy.deepcopy(context)
+
+    def make_pdf() -> bytes:
+        return build_question_pdf(rows_snapshot, forms_snapshot, context_snapshot)
+
+    st.download_button(label, data=make_pdf, file_name=filename, mime="application/pdf",
+                       on_click="ignore", width="stretch", key=key, help=help_text)
+
+
 def render_sidebar_pdf(state: dict, view: tuple[pd.DataFrame, dict] | None = None) -> None:
-    """Generate a private PDF only when requested, using this render's selection."""
+    """Offer selected-resident and all-resident PDFs for the same period and EPAs."""
     rows, context = current_report_view(state) if view is None else view
+    preferences = st.session_state.get(REPORT_FILTERS_KEY, {})
+    # With no resident filter the two selections already contain the same rows.
+    all_rows, all_context = current_report_view(state, all_residents=True) if preferences.get("residents") else (rows, context)
     with st.sidebar:
         st.divider()
-        filename = f"epa_question_averages_{context['academic_year_label']}.pdf"
-        if rows.empty:
-            st.download_button("Download PDF", data=b"", file_name=filename,
-                               mime="application/pdf", disabled=True, width="stretch",
-                               key="epa_pdf_download")
-            st.caption("Choose a Dashboard period with saved evaluations.")
-            return
-        rows_snapshot = rows.copy(deep=True)
-        used_forms = set(rows["form_id"].unique())
-        forms_snapshot = copy.deepcopy({key: value for key, value in state["forms"].items()
-                                        if key in used_forms})
-        context_snapshot = copy.deepcopy(context)
-
-        def make_pdf() -> bytes:
-            return build_question_pdf(rows_snapshot, forms_snapshot, context_snapshot)
-
-        st.download_button("Download PDF", data=make_pdf, file_name=filename,
-                           mime="application/pdf", on_click="ignore", width="stretch",
-                           key="epa_pdf_download",
-                           help="Every question is listed by EPA form and resident. Unselected or unscored averages stay blank.")
+        pdf_download_button(
+            state, rows, context, label="Download PDF", key="epa_pdf_download",
+            filename=f"epa_question_averages_{context['academic_year_label']}.pdf",
+            help_text="Every question is listed by EPA form and resident. Unselected or unscored averages stay blank.",
+        )
         st.caption("Uses your Dashboard resident, EPA, and date selections.")
+        pdf_download_button(
+            state, all_rows, all_context, label="Download PDF for all residents",
+            key="epa_pdf_all_residents_download",
+            filename=f"epa_all_residents_{all_context['academic_year_label']}.pdf",
+            help_text="One combined PDF for every resident with evaluations in the selected academic year, months, and EPA forms. Your resident selection stays unchanged.",
+        )
+        if all_rows.empty:
+            st.caption("Choose a Dashboard period with saved evaluations.")
+        else:
+            count = all_rows["resident_key"].nunique()
+            st.caption(f"Includes {count} {'resident' if count == 1 else 'residents'} in the selected period and EPA forms.")
 
 
 def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
