@@ -24,10 +24,12 @@ from epa_core import (
     register_form, resolve_conflict, score_rows, utc_now,
 )
 from epa_storage import GitHubStore, StorageError
+from epa_pdf import build_question_pdf
 
 
 ROOT = Path(__file__).resolve().parent
 NAVIGATION = ["Dashboard", "Upload", "Forms", "Review", "Settings"]
+REPORT_FILTERS_KEY = "_epa_report_filters"
 LABELS = {
     "resident": "Resident", "epa": "EPA", "question_id": "Question ID",
     "question": "Question", "average": "Average", "n": "Scored ratings",
@@ -174,7 +176,72 @@ def recognition_rows(state: dict) -> list[dict]:
     return rows
 
 
-def dashboard(state: dict) -> None:
+def report_context(state: dict, year: int, start_month: int, months: list[int], basis: str,
+                   rows: pd.DataFrame) -> dict:
+    ordered_months = [(start_month + i - 1) % 12 + 1 for i in range(12)]
+    month_labels = [f"{calendar.month_abbr[m]} {year if m >= start_month else year + 1}"
+                    for m in ordered_months if m in months]
+    warnings = []
+    unmapped = int(rows["status"].eq("unmapped").sum()) if not rows.empty else 0
+    if unmapped:
+        warnings.append(f"{unmapped} responses need scoring review and are not included in averages.")
+    return {
+        "academic_year_label": str(year) if start_month == 1 else f"{year}-{year + 1}",
+        "months_label": ", ".join(month_labels),
+        "date_basis_label": "Session month" if basis == "session_date" else "Completion month",
+        "generated_at": utc_now(),
+        "warnings": warnings,
+    }
+
+
+def current_report_view(state: dict) -> tuple[pd.DataFrame, dict]:
+    """Rebuild the last Dashboard selection from current saved data on any page."""
+    rows = score_rows(state)
+    start_month = state["settings"].get("academic_year_start_month", 7)
+    now = datetime.now(ZoneInfo("America/New_York"))
+    current_year = now.year - (now.month < start_month)
+    preferences = st.session_state.get(REPORT_FILTERS_KEY, {})
+    same_year_start = preferences.get("start_month", start_month) == start_month
+    year = int(preferences.get("academic_year", current_year)) if same_year_start else current_year
+    months = preferences.get("months", list(range(1, 13))) if same_year_start else list(range(1, 13))
+    basis = preferences.get("date_basis", "session_date")
+    selected = filter_rows(
+        rows, academic_year=year, start_month=start_month, months=months, date_basis=basis,
+        residents=preferences.get("residents") or None,
+        form_ids=preferences.get("form_ids") or None,
+    )
+    return selected, report_context(state, year, start_month, months, basis, selected)
+
+
+def render_sidebar_pdf(state: dict, view: tuple[pd.DataFrame, dict] | None = None) -> None:
+    """Generate a private PDF only when requested, using this render's selection."""
+    rows, context = current_report_view(state) if view is None else view
+    with st.sidebar:
+        st.divider()
+        filename = f"epa_question_averages_{context['academic_year_label']}.pdf"
+        if rows.empty:
+            st.download_button("Download PDF", data=b"", file_name=filename,
+                               mime="application/pdf", disabled=True, width="stretch",
+                               key="epa_pdf_download")
+            st.caption("Choose a Dashboard period with saved evaluations.")
+            return
+        rows_snapshot = rows.copy(deep=True)
+        used_forms = set(rows["form_id"].unique())
+        forms_snapshot = copy.deepcopy({key: value for key, value in state["forms"].items()
+                                        if key in used_forms})
+        context_snapshot = copy.deepcopy(context)
+
+        def make_pdf() -> bytes:
+            return build_question_pdf(rows_snapshot, forms_snapshot, context_snapshot)
+
+        st.download_button("Download PDF", data=make_pdf, file_name=filename,
+                           mime="application/pdf", on_click="ignore", width="stretch",
+                           key="epa_pdf_download",
+                           help="Every question is listed by EPA form and resident. Unselected or unscored averages stay blank.")
+        st.caption("Uses your Dashboard resident, EPA, and date selections.")
+
+
+def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
     st.header("Resident progress")
     if not state["evaluations"]:
         st.info("Upload your evaluation files to begin. Acutes and Adolescent Medicine forms are already available under Forms.")
@@ -192,7 +259,10 @@ def dashboard(state: dict) -> None:
         return
 
     start_month = state["settings"].get("academic_year_start_month", 7)
+    preferences = st.session_state.get(REPORT_FILTERS_KEY, {})
     date_label = st.radio("Track by", ["Session month", "Completion month"], horizontal=True,
+                          index=1 if preferences.get("date_basis") == "completed_at" else 0,
+                          key="dashboard_date_basis",
                           help="Session month follows the export's Session Date, which may be the rotation start. Completion month follows Date Completed.")
     basis = "session_date" if date_label == "Session month" else "completed_at"
     all_periods = filter_rows(rows, start_month=start_month, date_basis=basis)
@@ -201,22 +271,34 @@ def dashboard(state: dict) -> None:
     years = sorted({current_year, *all_periods["academic_year"].dropna().astype(int).tolist()}, reverse=True)
     year_label = lambda y: str(y) if start_month == 1 else f"{y}-{y + 1}"
     left, right = st.columns([1, 3])
+    same_year_start = preferences.get("start_month", start_month) == start_month
+    preferred_year = preferences.get("academic_year", current_year) if same_year_start else current_year
     with left:
-        year = st.selectbox("Academic year", years, format_func=year_label)
+        year = st.selectbox("Academic year", years, format_func=year_label,
+                            index=years.index(preferred_year) if preferred_year in years else 0,
+                            key=f"dashboard_year_{start_month}")
     ordered_months = [(start_month + i - 1) % 12 + 1 for i in range(12)]
     with right:
-        months = st.multiselect("Months", ordered_months, default=ordered_months,
+        preferred_months = preferences.get("months", ordered_months) if same_year_start else ordered_months
+        months = st.multiselect("Months", ordered_months, default=preferred_months,
                                 format_func=lambda m: calendar.month_abbr[m],
                                 key=f"months_{start_month}")
     col1, col2 = st.columns(2)
     resident_names = rows.drop_duplicates("resident_key").set_index("resident_key")["resident"].to_dict()
     with col1:
         resident_keys = st.multiselect("Residents", sorted(resident_names), format_func=lambda k: resident_names[k],
-                                       placeholder="All residents")
+                                       default=[key for key in preferences.get("residents", []) if key in resident_names],
+                                       key="dashboard_residents", placeholder="All residents")
     forms = state["forms"]
     with col2:
         form_ids = st.multiselect("EPAs", sorted(forms, key=lambda k: forms[k]["name"]),
-                                  format_func=lambda k: forms[k]["name"], placeholder="All EPAs")
+                                  format_func=lambda k: forms[k]["name"],
+                                  default=[key for key in preferences.get("form_ids", []) if key in forms],
+                                  key="dashboard_epas", placeholder="All EPAs")
+    st.session_state[REPORT_FILTERS_KEY] = {
+        "academic_year": year, "start_month": start_month, "months": list(months),
+        "date_basis": basis, "residents": list(resident_keys), "form_ids": list(form_ids),
+    }
     year_rows = filter_rows(rows, academic_year=year, start_month=start_month, date_basis=basis,
                             residents=resident_keys or None, form_ids=form_ids or None)
     selected = filter_rows(year_rows, months=months, start_month=start_month, date_basis=basis)
@@ -313,6 +395,7 @@ def dashboard(state: dict) -> None:
                 st.error("The Excel report could not be prepared. You can download the CSV reports below.")
         st.download_button("Question averages CSV", csv_bytes(public_frame(questions)), file_name=f"epa_questions_{year_label(year)}.csv", mime="text/csv")
         st.download_button("EPA averages CSV", csv_bytes(public_frame(summary)), file_name=f"epa_averages_{year_label(year)}.csv", mime="text/csv")
+    return selected, report_context(state, year, start_month, months, basis, selected)
 
 
 def draw_chart(frame: pd.DataFrame, year: int, start_month: int, months: list[int]) -> None:
@@ -699,8 +782,9 @@ def main() -> None:
             st.rerun()
     if notice := st.session_state.pop("notice", None):
         st.info(notice)
+    report_view = None
     if page == "Dashboard":
-        dashboard(state)
+        report_view = dashboard(state)
     elif page == "Upload":
         upload_page(state, store)
     elif page == "Forms":
@@ -709,6 +793,7 @@ def main() -> None:
         review_page(state, store)
     else:
         settings_page(state, store)
+    render_sidebar_pdf(state, report_view)
 
 
 if __name__ == "__main__":

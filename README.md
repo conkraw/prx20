@@ -12,9 +12,12 @@ The app is ready to configure and deploy. It has not been connected to your GitH
 | `epa_core.py` | File reading, form recognition, duplicate handling, and calculations. |
 | `epa_storage.py` | Encrypted GitHub storage and protection against competing saves. |
 | `epa_auth.py` | Password verification, sign-out, and session timeout. |
+| `epa_pdf.py` | PDF question reports divided by EPA form and resident. |
 | `seed_forms.json` | Acutes and Adolescent Medicine question definitions from the supplied forms. Contains no resident evaluations. |
 | `requirements.txt` | Tested Python dependencies. |
-| `setup_secrets.py` | Creates a password hash and encryption key on your computer. |
+| `setup_secrets.html` | Opens in your browser and generates the Secrets settings without installing Python. |
+| `setup_secrets.py` | Optional command-line version of the Secrets setup. |
+| `START_HERE.md` | Short guide for deployment through the GitHub and Streamlit websites. |
 | `secrets.toml.example` | Configuration template with placeholders only. |
 | `.streamlit/config.toml` | Appearance and upload configuration. |
 | `.gitignore` | Keeps local secrets and evaluation exports out of Git commits. |
@@ -40,16 +43,13 @@ The token goes into Streamlit Secrets, along with the data repository's `owner/r
 
 ### 3. Generate your password configuration
 
-Use Python 3.12, the version used to verify this package. In a terminal opened inside the extracted folder, run:
+Open `setup_secrets.html` from the extracted folder in Chrome or Edge. It runs in your browser and does not require a local Python installation. Choose and confirm an app password of at least 12 characters. Enter the data repository and GitHub token, or fill those placeholders in later. Generate and copy the settings.
 
-```bash
-python -m pip install -r requirements.txt
-python setup_secrets.py
-```
+The helper creates the password hash and encryption key locally in browser memory. It does not send your entries to a server, write them into the HTML file, or store them in browser storage. Its output includes the GitHub token and encryption key, so paste it only into your private Streamlit Secrets settings and keep a secure backup. Remember the password you chose before the input fields clear.
 
-The setup script asks you to choose and confirm an app password of at least 12 characters. It prints a configuration block containing a salted password hash, a new encryption key, and GitHub placeholders. Your password itself is not printed.
+This helper is for the first deployment. If you already have a saved archive, preserve its existing encryption key. Do not replace that key with a newly generated one.
 
-Fill in the token and data repository. The result has this structure:
+The configuration has this structure:
 
 ```toml
 [app]
@@ -77,10 +77,13 @@ For an existing app, update Secrets through its settings. The app stays locked u
 To run locally instead, put the completed configuration in `.streamlit/secrets.toml` and run:
 
 ```bash
+python -m pip install -r requirements.txt
 python -m streamlit run epa_tracker.py
 ```
 
 Do not commit `.streamlit/secrets.toml` to GitHub.
+
+If you prefer a terminal for first-time setup, `python setup_secrets.py` remains available after installing the requirements. It generates the same configuration format as the browser helper.
 
 ## First use with the supplied files
 
@@ -147,6 +150,16 @@ The Excel report contains EPA averages, question averages, monthly EPA results, 
 
 Reports contain resident information. Source comments are available in the app's saved-evaluation and conflict-review views. The score workbook's response audit contains raw responses and scoring status, without narrative comments.
 
+### Sidebar PDF report
+
+Choose the academic year, months, residents, and EPA forms on Dashboard, then click Download PDF in the sidebar. The button is available on every main page and uses your most recent Dashboard selections. Those selections stay in your signed-in session when you move between pages.
+
+The PDF is divided by EPA form, then resident. Each form and resident section starts on a new page and lists every question in the form's original order. Selected, confirmed questions with valid ratings show their average to two decimal places and their scored-response count. Unselected questions, unconfirmed scoring, and questions without valid scored ratings have empty Average and n cells. Narrative and administrative questions remain listed with blank cells unless you later explicitly include and map them for scoring.
+
+Selecting a question under Forms and saving its scoring settings makes it eligible for future PDFs using the stored evaluations. Generating a PDF does not change your question selections, scores, or saved data. The file is generated only when you click Download PDF.
+
+For an existing deployment, replace `epa_tracker.py` and `requirements.txt`, and add `epa_pdf.py` beside the other modules. Keep your current Streamlit Secrets and saved archive. The next deployment installs ReportLab automatically from the updated requirements.
+
 ## Duplicate and correction handling
 
 Exact repeated evaluations are skipped even when the file is renamed, the encoding changes, or question columns are rearranged. Duplicate detection does not depend on the upload filename.
@@ -190,7 +203,7 @@ Synthetic tests cover unknown and mixed forms, saved form recognition after relo
 To run the automated checks:
 
 ```bash
-python -m pip install pytest
+python -m pip install pytest pypdf
 python -m pytest tests -q
 ```
 
