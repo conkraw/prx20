@@ -377,6 +377,21 @@ def _parse_evaluations(headers: list[str], rows: list[dict], filename: str) -> t
             "subject_comments": get("subjectcomments"),
             "source_files": [PurePath(filename).name],
         }
+        # PGY is accepted only from an explicit resident/subject PGY column.
+        # Never infer a numeric year from "Intern" or "Senior" rotation labels.
+        pgy_aliases = ("subjectpgy", "residentpgy", "pgy", "postgraduateyear", "postgraduationyear",
+                       "subjectpostgraduateyear", "subjecttrainingyear", "trainingyear", "residencyyear", "pgylevel")
+        for pgy_alias in pgy_aliases:
+            if pgy_alias in columns and get(pgy_alias):
+                pgy_text = get(pgy_alias)
+                record["pgy_raw"] = pgy_text
+                record["pgy_source_field"] = columns[pgy_alias]
+                pgy_match = re.fullmatch(r"(?:PGY\s*[-:]?\s*)?(\d{1,2})(?:\.0+)?", pgy_text, re.I)
+                if pgy_match and 1 <= int(pgy_match.group(1)) <= 15:
+                    record["resident_pgy"] = int(pgy_match.group(1))
+                else:
+                    warnings.append(f"Line {line_num}: PGY could not be read. Review the APPD resident roster.")
+                break
         if source_id:
             record["source_evaluation_id"] = source_id
         record["id"] = record_identity(record)
@@ -479,6 +494,16 @@ def ingest_evaluations(state: dict, records: list[dict]) -> tuple[dict, dict]:
         old_hash = previous.get("content_hash") or record_content_hash(previous)
         if old_hash == incoming["content_hash"]:
             previous["source_files"] = sorted(set(previous.get("source_files", []) + incoming.get("source_files", [])))
+            # An enriched export must not create another evaluation. Fill missing
+            # PGY metadata, but surface conflicting PGYs for manual resolution.
+            new_pgy, old_pgy = incoming.get("resident_pgy"), previous.get("resident_pgy")
+            if new_pgy is not None and old_pgy is not None and new_pgy != old_pgy:
+                values = set(previous.get("pgy_metadata_conflicts", [])) | {old_pgy, new_pgy}
+                previous["pgy_metadata_conflicts"] = sorted(values)
+            elif new_pgy is not None and old_pgy is None:
+                for field in ("resident_pgy", "pgy_raw", "pgy_source_field"):
+                    if field in incoming:
+                        previous[field] = copy.deepcopy(incoming[field])
             stats["duplicates"] += 1
             continue
         conflict_id = "conflict_" + _digest([identity, old_hash, incoming["content_hash"]])

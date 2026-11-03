@@ -25,10 +25,11 @@ from epa_core import (
 )
 from epa_storage import GitHubStore, StorageError
 from epa_pdf import build_question_pdf
+from epa_appd_ui import admin_page as appd_admin_page, export_page as appd_export_page
 
 
 ROOT = Path(__file__).resolve().parent
-NAVIGATION = ["Dashboard", "Upload", "Forms", "Review", "Settings"]
+NAVIGATION = ["Dashboard", "Upload", "Forms", "Review", "APPD Export", "Admin", "Settings"]
 REPORT_FILTERS_KEY = "_epa_report_filters"
 LABELS = {
     "resident": "Resident", "epa": "EPA", "question_id": "Question ID",
@@ -810,6 +811,10 @@ def main() -> None:
         forms_page(state, store)
     elif page == "Review":
         review_page(state, store)
+    elif page == "APPD Export":
+        appd_export_page(state, store, commit)
+    elif page == "Admin":
+        appd_admin_page(state, store, commit)
     else:
         settings_page(state, store)
     render_sidebar_pdf(state, report_view)
