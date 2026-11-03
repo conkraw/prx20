@@ -709,6 +709,11 @@ def question_summary(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def epa_summary(rows: pd.DataFrame) -> pd.DataFrame:
+    """Average scored questions within each evaluation, then weight evaluations equally.
+
+    Question-level reports retain their own response means. A completely unscored
+    evaluation contributes neither zero nor a denominator to the overall average.
+    """
     frame = _included(rows)
     if frame.empty:
         return pd.DataFrame(columns=EPA_SUMMARY_COLUMNS)
@@ -720,7 +725,7 @@ def epa_summary(rows: pd.DataFrame) -> pd.DataFrame:
         result.append({
             "resident": first["resident"], "resident_key": resident_key,
             "form_id": form_id, "epa": first["epa"],
-            "average": questions["average"].mean(),
+            "average": scored.groupby("record_id", sort=False)["score"].mean().mean(),
             "n_evaluations": int(group["record_id"].nunique()),
             "n_scored_evaluations": int(scored["record_id"].nunique()),
             "n_ratings": len(scored),

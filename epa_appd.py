@@ -22,6 +22,8 @@ from xml.etree import ElementTree as ET
 
 from epa_core import clean_text, match_form, normalize_code, normalize_key, score_rows, utc_now
 
+# Bump when calculation behavior changes so old CCC approvals cannot be reused.
+CALCULATION_VERSION = "evaluation-first-multiepa-2026-11-03-v2"
 EPA_COLUMNS = [f"EPA {n}" for n in range(1, 13)]
 APPD_CODES = ("0", "1", "2a", "2b", "3a", "3b", "4", "5")
 HEADERS = ["programid", "assessmentdate", "name_or_program_assigned_ID", "pgy", "season", "mapping"] + EPA_COLUMNS
@@ -92,12 +94,17 @@ def defaults(today: date | None = None) -> dict:
         "assessment_date_mode": "latest_completed", "fixed_assessment_date": today.isoformat(),
         "aggregation": "equal_evaluations", "conversion_enabled": False,
         "conversion_confirmed": False, "minimum_score": 1.0, "score_bands": [],
+        "local_fraction_order": "b_then_a", "local_fraction_cutoff": 0.5,
     }
 
 
 def config_for(state: dict, today: date | None = None) -> dict:
     result = defaults(today)
     result.update(copy.deepcopy(state.get("settings", {}).get("appd", {})))
+    # This update deliberately standardizes both the dashboard and APPD evidence.
+    # A legacy pooling choice is left in the archive until the next settings save,
+    # but is not used for calculations. No source scores or mappings are changed.
+    result["aggregation"] = "equal_evaluations"
     return result
 
 
@@ -119,8 +126,16 @@ def validate_config(config: dict) -> None:
         raise ValueError("Choose a valid assessment-date rule.")
     if config["assessment_date_mode"] == "fixed" and as_date(config.get("fixed_assessment_date")) is None:
         raise ValueError("Enter the CCC assessment date.")
-    if config.get("aggregation") not in {"equal_evaluations", "pooled_ratings"}:
-        raise ValueError("Choose a valid averaging method.")
+    if config.get("aggregation") != "equal_evaluations":
+        raise ValueError("Use evaluation-first averaging: linked questions within each evaluation, then equal evaluation weights.")
+    if config.get("local_fraction_order", "b_then_a") not in {"b_then_a", "a_then_b"}:
+        raise ValueError("Choose a valid local a/b display order.")
+    try:
+        cutoff = float(config.get("local_fraction_cutoff", 0.5))
+    except (ValueError, TypeError):
+        raise ValueError("The local fractional cutoff must be between 0 and 1.") from None
+    if not math.isfinite(cutoff) or not 0 < cutoff < 1:
+        raise ValueError("The local fractional cutoff must be between 0 and 1.")
     if config.get("conversion_enabled"):
         if not config.get("conversion_confirmed"):
             raise ValueError("Confirm the local score conversion before enabling suggestions.")
@@ -141,14 +156,53 @@ def validate_config(config: dict) -> None:
 
 
 def suggested_level(average: float | None, config: dict) -> str:
+    """Suggest an APPD code only from the program's separate confirmed code bands.
+
+    Local display labels are deliberately never used here. For example, a local
+    label of '3' is not an accepted APPD supervision category.
+    """
     if average is None or not config.get("conversion_enabled") or not config.get("conversion_confirmed"):
         return ""
-    if average < float(config.get("minimum_score", 1)):
+    try:
+        average = float(average)
+    except (ValueError, TypeError):
+        return ""
+    if not math.isfinite(average) or average < float(config.get("minimum_score", 1)):
         return ""
     for band in config.get("score_bands", []):
         if average <= float(band["upper"]):
             return str(band["code"])
     return ""
+
+
+def local_display_level(average: Any, config: dict | None = None) -> str:
+    """A local display convention, not a validated APPD score conversion.
+
+    Default requested rule: integers remain integers, fractions through .50 get
+    b, and fractions above .50 get a. Calculate from the unrounded numeric mean.
+    Tiny floating-point error at an integer or cutoff is not a new category.
+    """
+    if average is None or isinstance(average, bool):
+        return ""
+    try:
+        value = float(average)
+    except (ValueError, TypeError):
+        return ""
+    if not math.isfinite(value) or value < 0:
+        return ""
+    config = config or {}
+    order = config.get("local_fraction_order", "b_then_a")
+    cutoff = float(config.get("local_fraction_cutoff", 0.5))
+    if order not in {"b_then_a", "a_then_b"} or not math.isfinite(cutoff) or not 0 < cutoff < 1:
+        raise ValueError("Invalid local display settings. Review Admin > Score conversion.")
+    nearest_integer = round(value)
+    if math.isclose(value, nearest_integer, rel_tol=0, abs_tol=1e-12):
+        return str(nearest_integer)
+    whole = math.floor(value)
+    fraction = value - whole
+    lower, upper = ("b", "a") if order == "b_then_a" else ("a", "b")
+    in_lower_half = fraction < cutoff or math.isclose(fraction, cutoff, rel_tol=0, abs_tol=1e-12)
+    return f"{whole}{lower if in_lower_half else upper}"
 
 
 def form_signature(form: dict) -> str:
@@ -158,7 +212,23 @@ def form_signature(form: dict) -> str:
 
 
 def mapping_for(state: dict, form_id: str) -> dict:
-    return copy.deepcopy(state.get("settings", {}).get("appd_question_maps", {}).get(form_id, {}))
+    saved = copy.deepcopy(state.get("settings", {}).get("appd_question_maps", {}).get(form_id, {}))
+    # Read legacy single-target entries as one-element lists without erasing them.
+    # Deduplicate targets so a response can contribute only once to each EPA.
+    links = {}
+    for qid, values in saved.get("questions", {}).items():
+        if isinstance(values, str):
+            values = [values] if values else []
+        if not isinstance(values, (list, tuple)):
+            raise ValueError(f"Question {qid} has an invalid saved EPA mapping. Review its mapping.")
+        targets = list(dict.fromkeys(str(value) for value in values))
+        if any(target not in EPA_COLUMNS for target in targets):
+            raise ValueError(f"Question {qid} has an unknown saved EPA target. Use EPA 1 through EPA 12.")
+        if targets:
+            links[str(qid)] = sorted(targets, key=EPA_COLUMNS.index)
+    if saved:
+        saved["questions"] = links
+    return saved
 
 
 def save_mapping(state: dict, form_id: str, links: dict, confirmed: bool) -> dict:
@@ -231,6 +301,7 @@ def resolve_pgy(state: dict, resident_key: str, assessment_date: date | None) ->
 def input_fingerprint(state: dict, config: dict) -> str:
     settings = state.get("settings", {})
     return digest({
+        "calculation_version": CALCULATION_VERSION,
         "config": config, "forms": state.get("forms", {}),
         "evaluations": state.get("evaluations", {}), "conflicts": state.get("conflicts", {}),
         "maps": settings.get("appd_question_maps", {}), "roster": settings.get("appd_roster", {}),
@@ -300,15 +371,36 @@ def build_draft(state: dict, config: dict | None = None) -> dict:
                 blocked[key] += 1
             evidence.append({
                 "Resident": item["resident"], "APPD EPA": epa, "Form": item["epa"],
+                "Evaluator": eligible[item["record_id"]].get("evaluator", ""),
                 "Question ID": item["question_id"], "Question": item["question"],
                 "Original response": item["raw_response"], "Numeric score": float(score) if valid else None,
                 "Status": item["status"], "Session date": item.get("session_date"),
                 "Date completed": item.get("completed_at"), "Evaluation ID": item["record_id"],
             })
     group_values, eval_means = defaultdict(list), defaultdict(list)
-    for (key, epa, rid), values in per_eval.items():
+    evaluation_scores, form_values = [], defaultdict(list)
+    for (key, epa, rid), values in sorted(per_eval.items()):
+        evaluation_average = mean(values)
         group_values[(key, epa)].extend(values)
-        eval_means[(key, epa)].append(mean(values))
+        eval_means[(key, epa)].append(evaluation_average)
+        record = eligible[rid]
+        fid = match_form(record, state.get("forms", {}))["form_id"]
+        form_values[(key, epa, fid)].append(evaluation_average)
+        mapped_count = sum(epa in targets for targets in good_links.get(fid, {}).values())
+        evaluation_scores.append({
+            "Resident": names.get(key, key), "APPD EPA": epa,
+            "Form": state["forms"][fid]["name"], "Evaluator": record.get("evaluator", ""),
+            "Evaluation average": evaluation_average,
+            "Scored questions": len(values), "Mapped questions": mapped_count,
+            "Session date": record.get("session_date"), "Date completed": record.get("completed_at"),
+            "Evaluation ID": rid,
+        })
+    form_summaries = [
+        {"Resident": names.get(key, key), "APPD EPA": epa,
+         "Form": state["forms"][fid]["name"], "Average": mean(values),
+         "Evaluations": len(values), "Local level": local_display_level(mean(values), config)}
+        for (key, epa, fid), values in sorted(form_values.items())
+    ]
     rows, summaries = [], []
     for key in sorted(people, key=lambda x: names.get(x, x).casefold()):
         records = [r for _, r in people[key]]
@@ -329,10 +421,11 @@ def build_draft(state: dict, config: dict | None = None) -> dict:
             warnings.append(f"{names.get(key, key)}: latest assessment date is outside the reporting year. Review the date or select a CCC date.")
         for epa in EPA_COLUMNS:
             values, evaluations = group_values[(key, epa)], eval_means[(key, epa)]
-            avg = mean(evaluations if config["aggregation"] == "equal_evaluations" else values) if values else None
+            avg = mean(evaluations) if evaluations else None
             row[epa] = suggested_level(avg, config)
             summaries.append({"resident_key": key, "Resident": row["Resident"], "APPD EPA": epa,
-                              "Average": avg, "Ratings": len(values), "Evaluations": len(evaluations),
+                              "Average": avg, "Local level": local_display_level(avg, config),
+                              "Ratings": len(values), "Evaluations": len(evaluations),
                               "Needs scoring review": blocked[(key, epa)], "Suggested level": row[epa]})
         rows.append(row)
     questions = []
@@ -341,6 +434,7 @@ def build_draft(state: dict, config: dict | None = None) -> dict:
                           "Form": state["forms"][fid]["name"], "Question ID": qid, "Question": text,
                           "Average": mean(values), "Ratings": len(values)})
     return {"rows": rows, "summary": summaries, "questions": questions, "evidence": evidence,
+            "evaluation_scores": evaluation_scores, "form_summaries": form_summaries,
             "warnings": list(dict.fromkeys(warnings)), "fingerprint": input_fingerprint(state, config),
             "config": config, "coverage_ready": coverage_ready and not any(blocked.values())}
 

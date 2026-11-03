@@ -1,3 +1,5 @@
+> Superseded details: MULTI_EPA_UPDATE_README.md describes the newest patch. It replaces pooled-rating choices with evaluation-first weighting and adds separate local display labels.
+
 # APPD export update
 
 This update adds Admin setup and APPD Excel export to the existing EPA Tracker. It does not change the app's entry point, password, GitHub credentials, encryption key, archive path, or existing PDF workflow.
@@ -32,7 +34,7 @@ The existing Forms section still controls which questions count toward averages 
 
 ## Averages and final APPD levels
 
-By default, the app averages linked questions within each evaluation, then gives each evaluation equal weight when combining forms for an EPA. Program setup also offers equal weight for every scored question response. Missing, excluded, unmapped, and unconfirmed responses do not become zeros in averages. Counts and source responses are available in Averages and evidence.
+The app averages linked questions within each evaluation, then gives each evaluation equal weight when combining forms for an EPA. The latest patch standardizes this rule and no longer offers pooled-rating weighting. Missing, excluded, unmapped, and unconfirmed responses do not become zeros in averages. Counts and source responses are available in Averages and evidence.
 
 APPD expects the categorical supervision levels 0, 1, 2a, 2b, 3a, 3b, 4, and 5. A faculty-rating average is not automatically a CCC-determined APPD level. Enter final levels directly or use the optional Score conversion section to configure your program's own average thresholds. Threshold suggestions are disabled by default and require confirmation. They are local suggestions, not an APPD-validated mathematical conversion. Final CCC review remains required.
 
@@ -54,11 +56,4 @@ Existing evaluation identities are unchanged. Reimporting a record to add explic
 
 ## Validation performed
 
-The selected core, storage, acceptance, APPD, and PDF tests passed: 94 tests passed, 1 skipped, and 8 subtests passed. The updated Python modules compile. Checks include exact workbook headers, one-sheet output, text dates, score aggregation, missing values, date windows, PGY handling, duplicate protection, stale approvals, and encrypted settings round trips. A fictional workbook was independently opened and visually inspected.
-
-The live Streamlit interface and an upload to the APPD site were not tested in this environment. The application's existing pinned Streamlit version supports the new controls. No requirements or Secrets changes are part of this update.
-
-## Official reference
-
-APPD CBME Data Hub User Guide, September 23, 2025. The EPA upload instructions and supervision scale appear on PDF page 17:
-https://www.appd.org/wp-content/uploads/2025/09/APPD-CBME-Data-Hub-User-Guide-1.pdf
+See MULTI_EPA_UPDATE_README.md for the latest test results and limitations. The current patch does not change requirements or Secrets.

@@ -63,6 +63,8 @@ Acutes and Adolescent Medicine definitions are already included. Their score cod
 
 The sidebar's Download PDF button exports the Dashboard's selected residents, EPA forms, academic year, and months. Every form question is listed, with a blank average when it is unselected or has no scored ratings.
 
+Use Download PDF for all residents to include everyone with matching evaluations in one combined PDF. It keeps your year, month, date-basis, and EPA filters, and includes all residents regardless of the Residents selection.
+
 If Streamlit reports a setup error, copy the error message or capture the error screen. Keep the token, password, and encryption key out of screenshots you share.
 
 ## References

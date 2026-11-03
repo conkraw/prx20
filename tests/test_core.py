@@ -231,7 +231,7 @@ class MatchingAndReportingTests(unittest.TestCase):
         self.assertTrue(rows["score"].isna().all())
         self.assertEqual(set(rows["status"]), {"unconfirmed"})
 
-    def test_question_means_have_equal_epa_weight(self):
+    def test_evaluation_means_have_equal_epa_weight(self):
         state = configured_state([
             record(answers=("5", "1"), evaluator="Teacher A"),
             record(answers=("3", ""), evaluator="Teacher B"),
@@ -242,7 +242,7 @@ class MatchingAndReportingTests(unittest.TestCase):
         self.assertEqual(questions["n"].tolist(), [2, 1])
         self.assertEqual(questions["n_missing"].tolist(), [0, 1])
         summary = core.epa_summary(rows).iloc[0]
-        self.assertEqual(summary["average"], 2.5)
+        self.assertEqual(summary["average"], 3.0)
         self.assertEqual(summary["n_evaluations"], 2)
         self.assertEqual(summary["n_ratings"], 3)
 
@@ -303,7 +303,7 @@ class MatchingAndReportingTests(unittest.TestCase):
         completion = core.filter_rows(rows, academic_year=2026, months=[8], date_basis="completed_at")
         self.assertEqual(completion["record_id"].nunique(), 2)
 
-    def test_cumulative_recalculates_underlying_question_means(self):
+    def test_cumulative_recalculates_underlying_evaluation_means(self):
         state = configured_state([
             record(answers=("5", "1"), session="7/1/2026", evaluator="Teacher A"),
             record(answers=("3", ""), session="8/1/2026", evaluator="Teacher B"),
@@ -313,7 +313,7 @@ class MatchingAndReportingTests(unittest.TestCase):
         monthly = core.monthly_summary(rows)
         cumulative = core.monthly_summary(rows, cumulative=True)
         self.assertEqual(monthly["period"].tolist(), ["2026-07", "2026-08"])
-        self.assertAlmostEqual(cumulative.iloc[-1]["average"], ((11 / 3) + 1) / 2)
+        self.assertAlmostEqual(cumulative.iloc[-1]["average"], 3.0)
         self.assertEqual(cumulative.iloc[-1]["n_ratings"], 4)
 
 

@@ -95,7 +95,7 @@ def test_partial_shared_question_ids_do_not_guess_between_forms():
     assert core.score_rows(state).empty
 
 
-def test_epa_composite_weights_questions_equally_and_blank_is_not_zero():
+def test_epa_composite_weights_evaluations_equally_and_blank_is_not_zero():
     records = _evaluations([
         {"101": "5", "102": "1", "evaluator": "Faculty, One"},
         {"101": "3", "102": "", "evaluator": "Faculty, Two"},
@@ -103,7 +103,7 @@ def test_epa_composite_weights_questions_equally_and_blank_is_not_zero():
     state, _ = core.ingest_evaluations(_state(), records)
     rows = core.score_rows(state)
     summary = core.epa_summary(rows).iloc[0]
-    assert summary["average"] == pytest.approx(2.5)
+    assert summary["average"] == pytest.approx(3.0)
     assert summary["n_evaluations"] == 2
     assert summary["n_ratings"] == 3
     questions = core.question_summary(rows).set_index("question_id")
@@ -162,7 +162,7 @@ def test_edited_answer_requires_resolution_and_does_not_double_count():
     assert core.epa_summary(core.score_rows(resolved)).iloc[0]["average"] == 4.5
 
 
-def test_cumulative_months_reaggregate_answers_not_monthly_means():
+def test_cumulative_months_reaggregate_evaluations_not_monthly_means():
     records = _evaluations([
         {"101": "1", "102": "5", "evaluator": "Faculty, One"},
         {"101": "5", "102": "", "evaluator": "Faculty, Two"},
@@ -172,7 +172,7 @@ def test_cumulative_months_reaggregate_answers_not_monthly_means():
     rows = core.filter_rows(core.score_rows(state), academic_year=2026)
     cumulative = core.monthly_summary(rows, cumulative=True).set_index("period")
     assert cumulative.loc["2026-07", "average"] == 4
-    assert cumulative.loc["2026-08", "average"] == pytest.approx(10 / 3)
+    assert cumulative.loc["2026-08", "average"] == pytest.approx(11 / 3)
     assert cumulative.loc["2026-08", "n_evaluations"] == 3
 
 

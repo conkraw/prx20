@@ -67,9 +67,9 @@ def _program_setup(state: dict, store, commit: Callable) -> None:
         a, b = st.columns([2, 1])
         mode = a.selectbox("Assessment date in the APPD file", list(modes), index=list(modes).index(cfg["assessment_date_mode"]), format_func=modes.get)
         fixed = b.date_input("CCC date, used only with the CCC-date option", value=appd.as_date(cfg["fixed_assessment_date"]))
-        methods = {"equal_evaluations": "Equal weight for each evaluation", "pooled_ratings": "Equal weight for each scored question response"}
-        aggregation = st.selectbox("Average mapped scores using", list(methods), index=list(methods).index(cfg["aggregation"]), format_func=methods.get)
-        st.caption("Equal evaluation weight first averages linked questions within an evaluation, then averages those evaluation scores across forms. Only the selected date range is used. The upload date is never used as the assessment date.")
+        aggregation = "equal_evaluations"
+        st.write("Averaging: linked questions within each evaluation, then equal weight for each completed evaluation.")
+        st.caption("For a given EPA, average its scored questions on each form first. Then average those evaluation scores across preceptors and forms. A form with more answered questions gets no extra weight. Only the selected date range is used. The upload date is never used as the assessment date.")
         save = st.form_submit_button("Save APPD program setup", type="primary")
     if save:
         proposal = dict(cfg, programid=program.strip(), season=season, year=int(year), mapping="GENERAL",
@@ -148,7 +148,7 @@ def _roster(state: dict, store, commit: Callable) -> None:
 
 
 def _question_mapping(state: dict, store, commit: Callable) -> None:
-    st.subheader("Link each form's questions to APPD EPAs")
+    st.subheader("Link each question to one or more EPAs")
     forms = state.get("forms", {})
     if not forms:
         st.info("Upload a question form first.")
@@ -156,56 +156,82 @@ def _question_mapping(state: dict, store, commit: Callable) -> None:
     fid = st.selectbox("Form to map", sorted(forms, key=lambda k: forms[k]["name"]),
                        format_func=lambda k: forms[k]["name"], key="appd_mapping_form")
     form = forms[fid]
-    saved = appd.mapping_for(state, fid)
+    try:
+        saved = appd.mapping_for(state, fid)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
     links = saved.get("questions", {})
     fresh = saved.get("form_signature") == appd.form_signature(form)
-    prefix = f"appd_map_{fid}_{appd.digest([form, saved])[:12]}"
-    st.caption("Choose one or more APPD EPAs for each relevant question. Leave unrelated questions unmapped. Different forms can contribute to the same EPA. Links are saved by question ID, not question position.")
+    prefix = f"appd_map_v2_{fid}_{appd.digest([form, saved])[:12]}"
+    st.caption("Each question has its own multiple-selection box. Select every EPA that applies. Selecting a second EPA keeps the first. Leave unrelated questions empty. Changes are saved together for this form.")
     if saved and not fresh:
         st.warning("The wording on this form changed. Review and reconfirm its APPD links.")
-    data = [{"Question ID": q["id"], "Question": q["text"], "Included for averages": bool(q.get("include")),
-             "APPD EPAs": list(links.get(q["id"], []))} for q in form["questions"]]
-    frame = pd.DataFrame(data)
-    frame.index = [q["id"] for q in form["questions"]]
-    edited = st.data_editor(frame, hide_index=True, width="stretch", key=prefix + "_editor",
-                           disabled=["_index", "Question ID", "Question", "Included for averages"],
-                           column_config={"Question": st.column_config.TextColumn(width="large"),
-                                "APPD EPAs": st.column_config.MultiselectColumn(options=appd.EPA_COLUMNS, width="large"),
-                                "Included for averages": st.column_config.CheckboxColumn()})
-    confirmed = st.checkbox("I reviewed these question-to-EPA links", value=bool(saved.get("confirmed") and fresh), key=prefix + "_confirmed")
-    if st.button("Save question mapping", type="primary"):
+    # Native multiselect widgets avoid dependence on an editable list column.
+    # Explicit per-question keys keep labels and saved links together on reruns.
+    proposed = {}
+    with st.form(prefix + "_form"):
+        for question in form["questions"]:
+            qid = str(question["id"])
+            left, right = st.columns([3, 2])
+            with left:
+                st.write(f"Question {qid}: {question['text']}")
+                if not question.get("include"):
+                    st.caption("Excluded from averages under Forms. Links can be saved but will not contribute yet.")
+            with right:
+                proposed[qid] = st.multiselect(
+                    f"EPAs for question {qid}", options=appd.EPA_COLUMNS,
+                    default=list(links.get(qid, [])), key=prefix + "_q_" + qid,
+                    help="Select multiple EPAs in this box. The question counts once in each selected EPA.",
+                )
+        confirmed = st.checkbox("I reviewed these question-to-EPA links",
+                                value=bool(saved.get("confirmed") and fresh), key=prefix + "_confirmed")
+        save = st.form_submit_button("Save question mapping", type="primary")
+    if save:
         try:
-            proposed = {}
-            for _, row in edited.iterrows():
-                values = row["APPD EPAs"]
-                if hasattr(values, "tolist"):
-                    values = values.tolist()
-                proposed[str(row["Question ID"])] = list(values) if isinstance(values, (list, tuple)) else []
             baseline_form, baseline_map = appd.digest(form), appd.digest(saved)
             def apply(current):
                 if appd.digest(current["forms"].get(fid)) != baseline_form or appd.digest(appd.mapping_for(current, fid)) != baseline_map:
                     raise ValueError("This form or its links changed in another session. Reload before saving.")
                 return appd.save_mapping(current, fid, proposed, confirmed), "Question mapping saved."
             if commit(store, apply):
-                _notify("Question mapping saved. Existing evaluations will use the saved links.")
+                _notify("Question mapping saved. Existing evaluations now use every selected EPA link.")
         except (ValueError, TypeError) as exc:
             st.error(str(exc))
     with st.expander("Mapping coverage across forms"):
-        coverage = []
-        for form_id, definition in forms.items():
+        for form_id, definition in sorted(forms.items(), key=lambda item: item[1]["name"]):
             mapped = appd.mapping_for(state, form_id)
             valid = mapped.get("confirmed") and mapped.get("form_signature") == appd.form_signature(definition)
-            coverage.append({"Form": definition["name"], "Linked questions": len(mapped.get("questions", {})),
-                             "APPD EPAs": ", ".join(sorted({epa for values in mapped.get("questions", {}).values() for epa in values}, key=appd.EPA_COLUMNS.index)),
-                             "Status": "Confirmed" if valid else "Needs review"})
-        st.dataframe(pd.DataFrame(coverage), hide_index=True, width="stretch")
-    st.caption("A linked question still needs to be included and have a confirmed numeric scale under Forms before it contributes to an average.")
+            targets = sorted({epa for values in mapped.get("questions", {}).values() for epa in values}, key=appd.EPA_COLUMNS.index)
+            status = "Confirmed" if valid else "Needs review"
+            target_text = ", ".join(targets) or "No EPA links"
+            st.write(f"{definition['name']}: {len(mapped.get('questions', {}))} linked questions. {target_text}. {status}.")
+    st.caption("Links are saved by question ID, not question position. A linked question also needs to be included and have a confirmed numeric scale under Forms.")
 
 
 def _conversion(state: dict, store, commit: Callable) -> None:
-    st.subheader("Optional average-to-level suggestions")
     cfg = appd.config_for(state)
-    st.write("APPD accepts 0, 1, 2a, 2b, 3a, 3b, 4, and 5. A numeric average does not identify those categories by itself. Leave suggestions off to enter CCC levels directly, or define your program's reviewable thresholds here.")
+    st.subheader("Local display labels")
+    st.write("The numeric average is preserved. A separate Local level column uses your display rule and leaves whole numbers unchanged.")
+    local_prefix = "appd_local_" + appd.digest(cfg)[:12]
+    with st.form(local_prefix + "_form"):
+        orders = {
+            "b_then_a": "b up to the cutoff, a above it (your requested rule)",
+            "a_then_b": "a up to the cutoff, b above it",
+        }
+        order = st.radio("Fractional label order", list(orders),
+                         index=list(orders).index(cfg.get("local_fraction_order", "b_then_a")),
+                         format_func=orders.get, key=local_prefix + "_order")
+        cutoff = st.number_input("Fractional cutoff", min_value=0.01, max_value=0.99,
+                                 value=float(cfg.get("local_fraction_cutoff", 0.5)), step=0.05,
+                                 format="%.2f", key=local_prefix + "_cutoff")
+        st.caption("With the requested rule and a 0.50 cutoff: 3.00 becomes 3, 3.25 becomes 3b, 3.50 becomes 3b, 3.75 becomes 3a, and 4.00 becomes 4. Exactly at the cutoff stays in the lower band. Labels use the unrounded average.")
+        save_local = st.form_submit_button("Save local display rule", type="primary")
+    if save_local:
+        _config_save(state, store, commit, dict(cfg, local_fraction_order=order, local_fraction_cutoff=float(cutoff)))
+    st.warning("Local display labels are not APPD supervision levels. APPD defines 3a as close support and 3b as moderate support, with 3b the higher-independence category. Plain 2 and 3 are not valid APPD upload values. Your local labels are never copied automatically to the APPD file.")
+    st.subheader("Optional APPD export suggestions")
+    st.write("Keep your local labels separate from official upload categories. Enter final CCC levels in APPD Export, or define and confirm program-specific numeric thresholds below. Saved thresholds are preserved by this update.")
     prefix = "appd_conversion_" + appd.digest(cfg)[:12]
     enabled = st.checkbox("Suggest APPD levels from our local average thresholds", value=cfg.get("conversion_enabled", False), key=prefix + "_enable")
     minimum = st.number_input("Lowest average covered by the conversion", value=float(cfg.get("minimum_score", 1)), step=0.1, key=prefix + "_min")
@@ -259,7 +285,7 @@ def export_page(state: dict, store, commit: Callable) -> None:
         st.error(f"Review Admin setup: {exc}")
         return
     st.caption(f"{cfg['programid']} | {cfg['season']} {cfg['year']} | {cfg['start_date']} through {cfg['end_date']}")
-    st.info("Calculated averages are evidence for review. The upload file contains your saved, CCC-approved APPD levels, not raw averages.")
+    st.info("Calculated averages and Local level labels are evidence for review. The upload file contains your saved, CCC-approved APPD levels, not raw averages or local display labels.")
     if not draft["rows"]:
         st.warning("No residents have evaluations in the saved date range. Adjust Program setup in Admin.")
         return
@@ -279,7 +305,10 @@ def export_page(state: dict, store, commit: Callable) -> None:
         with st.expander("Show calculated averages", expanded=False):
             summary = pd.DataFrame(draft["summary"])
             pivot = summary.pivot(index="Resident", columns="APPD EPA", values="Average").reindex(columns=appd.EPA_COLUMNS).reset_index()
-            st.dataframe(pivot, hide_index=True, width="stretch", column_config={epa: st.column_config.NumberColumn(format="%.2f") for epa in appd.EPA_COLUMNS})
+            st.dataframe(pivot, hide_index=True, width="stretch", column_config={epa: st.column_config.NumberColumn(format="%.4f") for epa in appd.EPA_COLUMNS})
+            local_pivot = summary.pivot(index="Resident", columns="APPD EPA", values="Local level").reindex(columns=appd.EPA_COLUMNS).reset_index()
+            st.caption("Local display labels only. These do not set the final APPD upload levels below.")
+            st.dataframe(local_pivot, hide_index=True, width="stretch")
         work_key = "appd_work_" + signature
         source_rows = st.session_state.get(work_key) or (saved.get("rows") if same_input else None) or draft["rows"]
         source_rows = appd.normalize_review_rows(source_rows)
@@ -358,17 +387,32 @@ def export_page(state: dict, store, commit: Callable) -> None:
 
 
 def _evidence(draft: dict) -> None:
-    st.caption("Missing, excluded, and unconfirmed responses do not become zeros in the averages. The existing form score maps remain in control.")
+    st.caption("First average valid mapped questions within each evaluation for an EPA. Then average the evaluation averages, with equal weight for each evaluation across preceptors and forms. Missing, excluded, unconfirmed, and unmapped responses do not become zeros. An evaluation with no valid scores contributes no average.")
+    st.caption("Local level uses the Admin display rule. It is not an official APPD category. No rounding is applied before averaging or assigning a local label.")
     names = [r["Resident"] for r in draft["rows"]]
     choice = st.selectbox("Resident evidence", ["All residents"] + names, key="appd_evidence_resident")
     def filtered(rows):
         return [r for r in rows if choice == "All residents" or r["Resident"] == choice]
     metrics = pd.DataFrame(filtered(draft["summary"])).drop(columns=["resident_key"], errors="ignore")
-    st.dataframe(metrics, hide_index=True, width="stretch", column_config={"Average": st.column_config.NumberColumn(format="%.2f")})
+    st.dataframe(metrics, hide_index=True, width="stretch", column_config={"Average": st.column_config.NumberColumn(format="%.4f")})
+    with st.expander("Step 1: EPA average within each completed evaluation", expanded=False):
+        st.dataframe(pd.DataFrame(filtered(draft["evaluation_scores"])), hide_index=True, width="stretch",
+                     column_config={"Evaluation average": st.column_config.NumberColumn(format="%.4f")})
+    with st.expander("Step 2: Evaluation averages grouped by form", expanded=False):
+        st.caption("These form summaries are for checking your results. The final EPA average above weights each evaluation equally, not each form equally.")
+        st.dataframe(pd.DataFrame(filtered(draft["form_summaries"])), hide_index=True, width="stretch",
+                     column_config={"Average": st.column_config.NumberColumn(format="%.4f")})
     with st.expander("Question averages contributing to each APPD EPA"):
+        st.caption("Question averages are descriptive. They are not averaged together to calculate the overall EPA average.")
         st.dataframe(pd.DataFrame(filtered(draft["questions"])), hide_index=True, width="stretch")
     with st.expander("Individual source responses"):
         st.dataframe(pd.DataFrame(filtered(draft["evidence"])), hide_index=True, width="stretch")
+    if draft["summary"]:
+        st.download_button("Download EPA averages and local labels CSV", data=_csv(filtered(draft["summary"])),
+                           file_name="APPD_EPA_averages_local_labels.csv", mime="text/csv", on_click="ignore")
+    if draft["evaluation_scores"]:
+        st.download_button("Download per-evaluation EPA averages CSV", data=_csv(filtered(draft["evaluation_scores"])),
+                           file_name="APPD_EPA_evaluation_averages.csv", mime="text/csv", on_click="ignore")
     if draft["evidence"]:
-        st.download_button("Download mapped evidence CSV", data=_csv(draft["evidence"]),
+        st.download_button("Download mapped evidence CSV", data=_csv(filtered(draft["evidence"])),
                            file_name="APPD_mapped_evidence.csv", mime="text/csv", on_click="ignore")

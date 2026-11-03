@@ -1,3 +1,7 @@
+> Latest update: See MULTI_EPA_UPDATE_README.md for multiple-EPA selectors, evaluation-first weighting, local labels, and APPD export safeguards.
+
+> APPD update: See APPD_UPDATE_README.md for Admin setup, per-form question mapping, PGY, and the reviewed all-resident Excel export.
+
 # EPA Tracker for Streamlit
 
 EPA Tracker recognizes evaluation forms by stable question IDs, remembers new forms, and reports each resident's EPA and question averages across an academic year. Forms, evaluations, scoring settings, and review decisions are encrypted before they are saved to GitHub.
@@ -14,7 +18,7 @@ The app is ready to configure and deploy. It has not been connected to your GitH
 | `epa_auth.py` | Password verification, sign-out, and session timeout. |
 | `epa_pdf.py` | PDF question reports divided by EPA form and resident. |
 | `seed_forms.json` | Acutes and Adolescent Medicine question definitions from the supplied forms. Contains no resident evaluations. |
-| `requirements.txt` | Tested Python dependencies. |
+| `requirements.txt` | Deployment dependency versions retained from the existing app. |
 | `setup_secrets.html` | Opens in your browser and generates the Secrets settings without installing Python. |
 | `setup_secrets.py` | Optional command-line version of the Secrets setup. |
 | `START_HERE.md` | Short guide for deployment through the GitHub and Streamlit websites. |
@@ -128,9 +132,9 @@ Each question row includes the average, scored-response count, blank count, excl
 
 ### Overall EPA
 
-The overall EPA average is the mean of that resident's question averages. Each selected question with a valid average receives equal weight. This avoids giving a frequently answered question more influence simply because another question was left unassessed.
+The overall EPA average first averages selected scored questions within each completed evaluation, then averages those evaluation scores with equal evaluation weight. A form with more scored questions receives no extra weight. An evaluation with no valid scored answers contributes no average.
 
-For example, question averages of 4.00, 3.00, and 5.00 produce an EPA average of 4.00. Questions with no scored responses are omitted, so the report also shows Questions with scores and Selected questions. Use those counts to judge completeness. The EPA average is a descriptive summary and does not itself establish an entrustment decision.
+For example, a preceptor's scores of 3 and 4 give an evaluation average of 3.50. Another preceptor's scores of 3 and 3 give 3.00. The overall EPA average is 3.25. Question averages remain available for inspection but are not averaged together to produce the overall score. Review the rating and evaluation counts to judge completeness. The EPA average is descriptive and does not itself establish an entrustment decision.
 
 The report does not combine different EPA forms into one score and does not rescale unlike forms into a common scale. Question-specific mappings should use comparable score meanings if their questions are included in one composite.
 
@@ -154,11 +158,15 @@ Reports contain resident information. Source comments are available in the app's
 
 Choose the academic year, months, residents, and EPA forms on Dashboard, then click Download PDF in the sidebar. The button is available on every main page and uses your most recent Dashboard selections. Those selections stay in your signed-in session when you move between pages.
 
+To export everyone at once, click Download PDF for all residents. This creates one combined PDF for all residents with matching evaluations in the selected academic year, months, date basis, and EPA forms. It includes residents outside the current Residents selection and leaves that selection as you set it. The sidebar shows how many residents the combined report will include. Residents without evaluations matching the chosen period and EPA forms do not receive an empty section.
+
 The PDF is divided by EPA form, then resident. Each form and resident section starts on a new page and lists every question in the form's original order. Selected, confirmed questions with valid ratings show their average to two decimal places and their scored-response count. Unselected questions, unconfirmed scoring, and questions without valid scored ratings have empty Average and n cells. Narrative and administrative questions remain listed with blank cells unless you later explicitly include and map them for scoring.
 
 Selecting a question under Forms and saving its scoring settings makes it eligible for future PDFs using the stored evaluations. Generating a PDF does not change your question selections, scores, or saved data. The file is generated only when you click Download PDF.
 
 For an existing deployment, replace `epa_tracker.py` and `requirements.txt`, and add `epa_pdf.py` beside the other modules. Keep your current Streamlit Secrets and saved archive. The next deployment installs ReportLab automatically from the updated requirements.
+
+If you already installed the sidebar PDF update, adding the all-residents button requires replacing only `epa_tracker.py`.
 
 ## Duplicate and correction handling
 
@@ -196,9 +204,9 @@ Replace only `app.password_hash` in Secrets. Keep the existing `security.fernet_
 
 ## Verification
 
-The package was checked against all four supplied .tab files. Tests verified the 20 evaluations, 17 normalized residents, exact question selections, duplicate reuploads, and question/overall calculations under an explicitly hypothetical 1-5 scale with code 6 excluded. This verifies the software arithmetic, not the missing clinical scale labels.
+See MULTI_EPA_UPDATE_README.md for this release's actual verification results. Current arithmetic checks use invented evaluations. Original resident files are deliberately not included in the distribution. Software arithmetic does not validate the clinical meaning of response codes.
 
-Synthetic tests cover unknown and mixed forms, saved form recognition after reload, ambiguous matches, response-code mapping, per-question scales, corrections and possible duplicates, academic-year boundaries, missing dates, concurrency conflicts, encryption failures, password access, and the main Streamlit screens. GitHub responses were mocked for these tests. A live connection to your repository still needs to be configured and exercised on deployment.
+The supplied test suite includes parsing, identity, scoring, persistence, report, authentication, and Streamlit tests. This release ran the core, APPD, acceptance, storage, requested-calculation, mapping-widget test-double, and PDF checks. The live Streamlit and authentication UI suites were not run here because Streamlit was unavailable. GitHub storage responses were mocked. No connection to your live repository or APPD account was made.
 
 To run the automated checks:
 

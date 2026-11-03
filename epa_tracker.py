@@ -26,6 +26,7 @@ from epa_core import (
 from epa_storage import GitHubStore, StorageError
 from epa_pdf import build_question_pdf
 from epa_appd_ui import admin_page as appd_admin_page, export_page as appd_export_page
+from epa_appd import config_for as appd_config_for, local_display_level
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,7 +34,7 @@ NAVIGATION = ["Dashboard", "Upload", "Forms", "Review", "APPD Export", "Admin", 
 REPORT_FILTERS_KEY = "_epa_report_filters"
 LABELS = {
     "resident": "Resident", "epa": "EPA", "question_id": "Question ID",
-    "question": "Question", "average": "Average", "n": "Scored ratings",
+    "question": "Question", "average": "Average", "local_level": "Local level", "n": "Scored ratings",
     "n_missing": "Blank", "n_excluded": "Excluded by scale",
     "n_unmapped": "Needs scoring review", "n_evaluations": "Evaluations",
     "n_scored_evaluations": "Scored evaluations", "n_ratings": "Scored ratings",
@@ -337,6 +338,11 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
     cumulative = monthly_summary(year_rows, cumulative=True)
     if not cumulative.empty:
         cumulative = cumulative.loc[cumulative["period"].str[-2:].astype(int).isin(months)]
+    display_config = appd_config_for(state)
+    for report in (summary, monthly, cumulative):
+        if not report.empty:
+            report.insert(report.columns.get_loc("average") + 1, "local_level",
+                          report["average"].map(lambda value: local_display_level(value, display_config)))
     unmapped = selected.loc[selected["status"].eq("unmapped")]
     if not unmapped.empty:
         st.warning(f"{len(unmapped)} responses use codes missing from the saved scale. They are excluded from the averages until you map them in Forms.")
@@ -347,7 +353,8 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
     counters[3].metric("Scored ratings", int(selected["status"].eq("scored").sum()))
     summary_tab, questions_tab, trends_tab, export_tab = st.tabs(["EPA averages", "Each question", "Monthly progress", "Download"])
     with summary_tab:
-        st.caption("Average of the selected question averages. Each question has equal weight. Blank, excluded, and unmapped responses do not count as zero.")
+        st.caption("Average the selected scored questions within each evaluation first. Then average those evaluation scores, giving each evaluation equal weight. Blank, excluded, and unmapped responses do not count as zero.")
+        st.caption("Local level is your display label, not an APPD supervision category. These are form-level summaries. Mapped EPA 1-12 results are under APPD Export > Averages and evidence.")
         table(public_frame(summary))
         if not summary.empty and (summary["n_questions_scored"] < summary["n_questions_expected"]).any():
             st.caption("An EPA average can be based on only part of the form. Compare Questions with scores with Selected questions before interpreting it.")
@@ -392,7 +399,8 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
             {"Setting": "Months selected", "Value": month_names},
             {"Setting": "Date basis", "Value": date_label},
             {"Setting": "Question average", "Value": "Sum of mapped scores / number of scored responses for that question."},
-            {"Setting": "Overall EPA average", "Value": "Mean of question averages, with equal weight for each question with a score. Not an official entrustment decision."},
+            {"Setting": "Overall EPA average", "Value": "Mean of within-evaluation averages, with equal weight for each evaluation with a valid score. Not an official entrustment decision."},
+            {"Setting": "Local level", "Value": f"Display only, not an APPD category. Whole numbers remain whole. Fractional order: {display_config['local_fraction_order']}, cutoff: {display_config['local_fraction_cutoff']}. Uses unrounded averages."},
             {"Setting": "Cumulative", "Value": "Recalculated from all evaluations from academic-year start through each displayed month, even if earlier months are hidden."},
             {"Setting": "Missing values", "Value": "Blank, excluded, unconfirmed, and unmapped values are excluded from the score denominator. Missing is not zero."},
             {"Setting": "Pending conflicts", "Value": str(len(state["conflicts"]))},
@@ -741,7 +749,7 @@ def settings_page(state: dict, store: GitHubStore) -> None:
             st.session_state["notice"] = st.session_state["save_result"]
             st.rerun()
     with st.expander("How averages and saved data work"):
-        st.write("Each question average uses all valid mapped ratings for that resident and EPA in the selected date range. The overall EPA average gives each question average equal weight. It is a descriptive summary, not a separate entrustment determination.")
+        st.write("Each question average uses its valid mapped ratings in the selected date range. Overall EPA averages first average selected scored questions within each completed evaluation, then average those evaluation scores with equal weight. An evaluation with no valid scored answers contributes no average. Local levels are display labels, not APPD supervision decisions. Question-level PDF reports remain numeric.")
         st.write("Responses are preserved as exported. Changing a form's scale recalculates reports without re-uploading. Unexpected codes are flagged instead of treated as numeric scores.")
         st.write("The archive contains forms, evaluations, and review decisions, encrypted before it is saved to GitHub. Reopening the app restores the archive after login.")
         st.write("Exact re-uploads are skipped. Because these exports do not contain a unique evaluation ID, similar records with changed completion dates are held for review.")
