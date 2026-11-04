@@ -84,67 +84,94 @@ def _program_setup(state: dict, store, commit: Callable) -> None:
 
 
 def _roster(state: dict, store, commit: Callable) -> None:
-    st.subheader("Resident names / IDs and PGY")
+    st.subheader("Resident start dates and PGY")
     names = appd.residents_in(state)
     if not names:
         st.info("Upload resident evaluations first. The resident list will appear here automatically.")
         return
     cfg = appd.config_for(state)
-    start_month = state["settings"].get("academic_year_start_month", 7)
-    default_year = appd.academic_year(appd.as_date(cfg["end_date"]) or date.today(), start_month)
-    year = int(st.number_input("PGY academic year begins in", min_value=2000, max_value=2100, value=default_year, step=1,
-                               help="PGY overrides are saved separately for each academic year, using the academic-year start month in Settings."))
     stored = state["settings"].get("appd_roster", {})
-    data = []
-    for key, name in names.items():
-        row = stored.get(key, {})
-        detected, source = appd.detected_pgy(state, key, year)
-        manual = appd.pgy_number(row.get("pgy_by_academic_year", {}).get(str(year)))
-        data.append({"Resident": name, "APPD name or ID": row.get("export_id") or name,
-                     "Detected PGY": detected, "PGY override": manual, "PGY source": source})
+    baseline = appd.digest(stored)
+    version = baseline[:12]
+    st.caption("Enter July 1 of each resident's PGY1 start year once. PGY advances every July 1 and is calculated at the assessment date, not today's date or the upload date. A start date takes priority over older manual PGY entries.")
+    preview_day = st.date_input("Preview PGY on assessment date", value=appd.as_date(cfg["end_date"]) or date.today(),
+                                key="appd_pgy_preview_date")
+    data = [{"Resident": name, "APPD name or ID": stored.get(key, {}).get("export_id") or name,
+             "Residency start date": appd.as_date(stored.get(key, {}).get("residency_start_date"))}
+            for key, name in names.items()]
     frame = pd.DataFrame(data, index=list(names))
-    for column in ("Detected PGY", "PGY override"):
-        frame[column] = pd.array(frame[column], dtype="Float64")
-    version = appd.digest(stored)[:12]
-    st.caption("The supplied TAB files do not include PGY. Enter it here once per academic year. Future exports with an explicit PGY field can fill Detected PGY. Intern/senior rotation names are never used to guess a year. A saved override takes priority.")
-    edited = st.data_editor(frame, hide_index=True, width="stretch", key=f"appd_roster_{year}_{version}",
-                            disabled=["_index", "Resident", "Detected PGY", "PGY source"],
+    frame["Residency start date"] = pd.Series([r["Residency start date"] for r in data], index=frame.index, dtype=object)
+    edited = st.data_editor(frame, hide_index=True, width="stretch", key=f"appd_start_roster_{version}",
+                            disabled=["_index", "Resident"],
                             column_config={"Resident": st.column_config.TextColumn(width="medium"),
                                 "APPD name or ID": st.column_config.TextColumn(width="medium", required=True),
-                                "PGY override": st.column_config.NumberColumn(min_value=1, max_value=15, step=1, format="%d"),
-                                "Detected PGY": st.column_config.NumberColumn(format="%d"),
-                                "PGY source": st.column_config.TextColumn(width="large")})
+                                "Residency start date": st.column_config.DateColumn("PGY1 start date (July 1)", format="MM/DD/YYYY",
+                                    help="For example, 07/01/2026. Leave blank only when the start year is not known.")})
+    updates = {}
+    for key, values in edited.iterrows():
+        raw = values["APPD name or ID"]
+        updates[key] = {"export_id": "" if pd.isna(raw) else str(raw).strip(),
+                        "residency_start_date": values["Residency start date"]}
     if st.button("Save resident roster", type="primary"):
         try:
-            updates = {}
-            for key, values in edited.iterrows():
-                raw_id = values["APPD name or ID"]
-                identifier = "" if pd.isna(raw_id) else str(raw_id).strip()
-                if not identifier:
-                    raise ValueError(f"Enter an APPD name or ID for {names[key]}.")
-                raw = values["PGY override"]
-                pgy = appd.pgy_number(raw)
-                if not pd.isna(raw) and pgy is None:
-                    raise ValueError(f"Enter a whole-number PGY for {names[key]}.")
-                updates[key] = (identifier, pgy)
-            baseline = appd.digest(stored)
+            # Validate the submitted date and preserve all existing roster metadata.
+            appd.save_roster(state, updates, baseline)
             def apply(current):
-                roster = current["settings"].setdefault("appd_roster", {})
-                if appd.digest(roster) != baseline:
-                    raise ValueError("The resident roster changed in another session. Reload before saving.")
-                for key, (identifier, pgy) in updates.items():
-                    saved = roster.setdefault(key, {"resident": names[key]})
-                    saved["export_id"] = identifier
-                    years = saved.setdefault("pgy_by_academic_year", {})
-                    if pgy is None:
-                        years.pop(str(year), None)
-                    else:
-                        years[str(year)] = pgy
-                return current, "Resident roster saved."
+                return appd.save_roster(current, updates, baseline), "Resident roster saved."
             if commit(store, apply):
-                _notify(f"Resident roster saved for academic year {year}-{year + 1}.")
+                _notify("Start dates saved. Historical and future PGYs now use each assessment date.")
         except (ValueError, TypeError) as exc:
             st.error(str(exc))
+    previews = []
+    for key, values in updates.items():
+        if appd.has_start_date(values):
+            pgy, source = appd.pgy_from_start(values["residency_start_date"], preview_day)
+        else:
+            preview_state = {"evaluations": state.get("evaluations", {}),
+                             "settings": {**state["settings"], "appd_roster": {**stored,
+                                          key: {**stored.get(key, {}), "residency_start_date": ""}}}}
+            pgy, source = appd.resolve_pgy(preview_state, key, preview_day)
+        previews.append({"Resident": names[key], "Assessment date": preview_day,
+                         "PGY": appd.pgy_label(pgy), "Source / issue": source})
+    with st.expander("PGY preview for the dates entered above", expanded=True):
+        st.caption("Preview includes unsaved edits. Click Save resident roster to apply them to reports.")
+        st.dataframe(pd.DataFrame(previews), hide_index=True, width="stretch")
+    with st.expander("Set the same start year for a group of residents"):
+        st.caption("This saves only the selected residents. It does not change anyone else.")
+        selected = st.multiselect("Residents in this starting class", list(names), format_func=names.get,
+                                  key=f"appd_start_cohort_{version}")
+        start_year = int(st.number_input("PGY1 start year", min_value=1900, max_value=2100, value=date.today().year, step=1))
+        if st.button("Save July 1 start date for selected residents", disabled=not selected):
+            updates_group = {key: {"export_id": stored.get(key, {}).get("export_id") or names[key],
+                                   "residency_start_date": date(start_year, 7, 1).isoformat()} for key in selected}
+            def apply(current):
+                return appd.save_roster(current, updates_group, baseline), "Resident start dates saved."
+            if commit(store, apply):
+                _notify(f"Saved July 1, {start_year} for {len(selected)} residents.")
+    with st.expander("Manual PGY fallback for residents without start dates"):
+        st.caption("Existing entries are preserved. These values apply only when no start date is saved. A saved start date always controls PGY.")
+        default_year = appd.academic_year(preview_day, state["settings"].get("academic_year_start_month", 7))
+        year = int(st.number_input("Manual PGY academic year begins in", min_value=1900, max_value=2100,
+                                   value=default_year, step=1, key="appd_manual_pgy_year"))
+        fallback = pd.DataFrame([{"Resident": name,
+                    "Manual PGY": appd.pgy_number(stored.get(key, {}).get("pgy_by_academic_year", {}).get(str(year)))}
+                    for key, name in names.items()], index=list(names))
+        fallback["Manual PGY"] = pd.array(fallback["Manual PGY"], dtype="Float64")
+        manual = st.data_editor(fallback, hide_index=True, width="stretch", key=f"appd_manual_roster_{year}_{version}",
+                                disabled=["_index", "Resident"], column_config={
+                                    "Manual PGY": st.column_config.NumberColumn(min_value=1, max_value=15, step=1, format="%d")})
+        if st.button("Save manual PGY fallback"):
+            fallback_updates = {key: {"export_id": stored.get(key, {}).get("export_id") or names[key],
+                                     "residency_start_date": stored.get(key, {}).get("residency_start_date"),
+                                     "manual_year": year, "manual_pgy": row["Manual PGY"]} for key, row in manual.iterrows()}
+            try:
+                appd.save_roster(state, fallback_updates, baseline)
+                def apply(current):
+                    return appd.save_roster(current, fallback_updates, baseline), "Manual PGY fallback saved."
+                if commit(store, apply):
+                    _notify("Manual PGY fallback saved. Residents with a start date still use automatic PGY.")
+            except (ValueError, TypeError) as exc:
+                st.error(str(exc))
 
 
 def _question_mapping(state: dict, store, commit: Callable) -> None:
@@ -273,6 +300,37 @@ def _csv(data: list[dict]) -> bytes:
     return frame.map(protect).to_csv(index=False).encode("utf-8-sig")
 
 
+def calculated_overview(draft: dict, *, key_prefix: str = "appd") -> None:
+    """Visible read-only averages and local labels, separate from final APPD codes."""
+    st.subheader("Calculated EPA averages")
+    st.caption("Each cell shows the numeric average and your local label, for example 3.25 (3b). These results calculate automatically from saved mappings and confirmed scores. Final APPD levels are reviewed separately.")
+    metrics = {(r["resident_key"], r["APPD EPA"]): r for r in draft["summary"]}
+    rows = []
+    for row in draft["rows"]:
+        display = {"Resident": row["Resident"], "Assessment date": appd.as_date(row["assessmentdate"]),
+                   "PGY": appd.pgy_label(row["pgy"])}
+        for epa in appd.EPA_COLUMNS:
+            metric = metrics.get((row["resident_key"], epa), {})
+            avg = metric.get("Average")
+            display[epa] = f"{avg:.2f} ({metric['Local level']})" if avg is not None else ""
+        rows.append(display)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
+                 column_config={"Resident": st.column_config.TextColumn(pinned=True),
+                                "Assessment date": st.column_config.DateColumn(format="MM/DD/YYYY")})
+    if draft.get("summary") and all(r["Average"] is None for r in draft["summary"]):
+        st.warning("No mapped EPA averages are available for this selection. Check the reasons below. Missing results are not zero.")
+    with st.expander("Why is an average blank? / Form readiness", expanded=bool(draft.get("warnings"))):
+        st.dataframe(pd.DataFrame(draft.get("form_diagnostics", [])), hide_index=True, width="stretch")
+        missing = [{"Resident": r["Resident"], "EPA": r["APPD EPA"], "Reason": r["Calculation status"]}
+                   for r in draft["summary"] if r["Average"] is None]
+        if missing:
+            st.dataframe(pd.DataFrame(missing), hide_index=True, width="stretch")
+        st.caption("Check the selected dates, saved question-to-EPA links, included questions, and confirmed scoring scale. Blank final-upload cells are separate from blank calculated averages.")
+    if draft["summary"]:
+        st.download_button("Download calculated averages CSV", data=_csv(draft["summary"]),
+                           file_name="EPA_calculated_averages.csv", mime="text/csv", on_click="ignore", key=key_prefix + "_averages_csv")
+
+
 def export_page(state: dict, store, commit: Callable) -> None:
     st.header("APPD Export")
     if not state.get("settings", {}).get("appd"):
@@ -298,20 +356,16 @@ def export_page(state: dict, store, commit: Callable) -> None:
     same_input = saved.get("input_fingerprint") == signature
     if saved and not same_input:
         st.warning("The data or setup changed since the saved review. Prior approval no longer applies. Review the refreshed draft and approve it again.")
-    tab_final, tab_evidence = st.tabs(["Final APPD levels", "Averages and evidence"])
+    tab_averages, tab_final, tab_evidence = st.tabs(["Calculated EPA averages", "Final APPD levels", "Averages and evidence"])
+    with tab_averages:
+        calculated_overview(draft)
     with tab_evidence:
         _evidence(draft)
     with tab_final:
-        with st.expander("Show calculated averages", expanded=False):
-            summary = pd.DataFrame(draft["summary"])
-            pivot = summary.pivot(index="Resident", columns="APPD EPA", values="Average").reindex(columns=appd.EPA_COLUMNS).reset_index()
-            st.dataframe(pivot, hide_index=True, width="stretch", column_config={epa: st.column_config.NumberColumn(format="%.4f") for epa in appd.EPA_COLUMNS})
-            local_pivot = summary.pivot(index="Resident", columns="APPD EPA", values="Local level").reindex(columns=appd.EPA_COLUMNS).reset_index()
-            st.caption("Local display labels only. These do not set the final APPD upload levels below.")
-            st.dataframe(local_pivot, hide_index=True, width="stretch")
+        st.caption("The calculated averages are on the first tab. This table contains final APPD categories only. Without a configured APPD conversion, final levels stay blank until reviewed. Local a/b labels are not copied into the upload automatically.")
         work_key = "appd_work_" + signature
         source_rows = st.session_state.get(work_key) or (saved.get("rows") if same_input else None) or draft["rows"]
-        source_rows = appd.normalize_review_rows(source_rows)
+        source_rows = appd.apply_start_date_pgys(state, source_rows)
         version = appd.digest(source_rows)[:12]
         rows = copy.deepcopy(source_rows)
         for row in rows:
@@ -328,8 +382,13 @@ def export_page(state: dict, store, commit: Callable) -> None:
                                disabled=["_index", "Resident"], column_config=columns,
                                column_order=["Resident", "Include", "name_or_program_assigned_ID", "assessmentdate", "pgy"] + appd.EPA_COLUMNS,
                                key=f"appd_final_{signature[:12]}_{version}")
-        normalized = appd.normalize_review_rows(edited.reset_index().to_dict("records"))
-        st.caption("Choose a final APPD level for all 12 EPAs for each included resident. Use 0 only when not observed. PGY is for the assessment date. A changed date may require a different PGY. Edits here affect this reporting period only.")
+        raw_rows = appd.normalize_review_rows(edited.reset_index().to_dict("records"))
+        normalized = appd.apply_start_date_pgys(state, raw_rows)
+        if appd.digest(raw_rows) != appd.digest(normalized):
+            # Persist all edits before rebuilding the widget with the recalculated PGY.
+            st.session_state[work_key] = normalized
+            st.rerun()
+        st.caption("Choose a final APPD level for all 12 EPAs for each included resident. Use 0 only when not observed. PGY recalculates when you edit the assessment date for a resident with a saved start date. Manual PGY edits apply only to residents without start dates. Edits here affect this reporting period only.")
         a, b = st.columns(2)
         if a.button("Mark unrated EPAs as not observed (0)", width="stretch", disabled=not draft.get("coverage_ready", False),
                     help="Requires confirmed mappings and scoring for the included forms. Fills only blank levels with no scored evidence. Review these classifications before approval."):

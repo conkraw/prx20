@@ -27,6 +27,8 @@ from epa_storage import GitHubStore, StorageError
 from epa_pdf import build_question_pdf
 from epa_appd_ui import admin_page as appd_admin_page, export_page as appd_export_page
 from epa_appd import config_for as appd_config_for, local_display_level
+import epa_appd as appd_tools
+from epa_appd_ui import calculated_overview
 from epa_form_ui import apply_form_removal_session_cleanup, render_form_removal
 
 
@@ -34,7 +36,7 @@ ROOT = Path(__file__).resolve().parent
 NAVIGATION = ["Dashboard", "Upload", "Forms", "Review", "APPD Export", "Admin", "Settings"]
 REPORT_FILTERS_KEY = "_epa_report_filters"
 LABELS = {
-    "resident": "Resident", "epa": "EPA", "question_id": "Question ID",
+    "resident": "Resident", "assessment_pgys": "PGY at assessments", "epa": "EPA", "question_id": "Question ID",
     "question": "Question", "average": "Average", "local_level": "Local level", "n": "Scored ratings",
     "n_missing": "Blank", "n_excluded": "Excluded by scale",
     "n_unmapped": "Needs scoring review", "n_evaluations": "Evaluations",
@@ -344,6 +346,11 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
         if not report.empty:
             report.insert(report.columns.get_loc("average") + 1, "local_level",
                           report["average"].map(lambda value: local_display_level(value, display_config)))
+    summary = appd_tools.annotate_summary_pgys(state, summary, selected)
+    questions = appd_tools.annotate_summary_pgys(state, questions, selected)
+    monthly = appd_tools.annotate_summary_pgys(state, monthly, selected)
+    cumulative = appd_tools.annotate_summary_pgys(state, cumulative, year_rows, cumulative=True)
+    pgy_records = pd.DataFrame(appd_tools.assessment_pgy_rows(state, set(selected["record_id"])))
     unmapped = selected.loc[selected["status"].eq("unmapped")]
     if not unmapped.empty:
         st.warning(f"{len(unmapped)} responses use codes missing from the saved scale. They are excluded from the averages until you map them in Forms.")
@@ -352,13 +359,34 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
     counters[1].metric("EPAs", selected["form_id"].nunique())
     counters[2].metric("Evaluations", selected["record_id"].nunique())
     counters[3].metric("Scored ratings", int(selected["status"].eq("scored").sum()))
-    summary_tab, questions_tab, trends_tab, export_tab = st.tabs(["EPA averages", "Each question", "Monthly progress", "Download"])
+    summary_tab, questions_tab, trends_tab, pgy_tab, export_tab = st.tabs(["EPA averages", "Each question", "Monthly progress", "Assessment PGY", "Download"])
     with summary_tab:
+        has_links = any(value.get("confirmed") and value.get("questions")
+                        for value in state["settings"].get("appd_question_maps", {}).values())
+        view = st.radio("Average summary", ["By evaluation form", "Mapped EPA 1-12"],
+                         index=1 if has_links else 0, horizontal=True, key="dashboard_summary_type")
         st.caption("Average the selected scored questions within each evaluation first. Then average those evaluation scores, giving each evaluation equal weight. Blank, excluded, and unmapped responses do not count as zero.")
-        st.caption("Local level is your display label, not an APPD supervision category. These are form-level summaries. Mapped EPA 1-12 results are under APPD Export > Averages and evidence.")
-        table(public_frame(summary))
-        if not summary.empty and (summary["n_questions_scored"] < summary["n_questions_expected"]).any():
-            st.caption("An EPA average can be based on only part of the form. Compare Questions with scores with Selected questions before interpreting it.")
+        if view == "Mapped EPA 1-12":
+            try:
+                mapped = appd_tools.dashboard_mapped_draft(state, selected, basis)
+                calculated_overview(mapped, key_prefix="dashboard")
+                st.caption("Uses the Dashboard filters above, not the separately saved APPD export date range. PGY uses each resident's latest Date Completed in this selection. See Assessment PGY for each individual evaluation.")
+            except (ValueError, TypeError, KeyError) as exc:
+                st.error(f"Review the saved question mapping or scoring setup: {exc}")
+        else:
+            st.caption("Local level is your display label, not an APPD supervision category. These averages combine the selected questions within each form. Choose Mapped EPA 1-12 above to combine the questions linked to each EPA.")
+            table(public_frame(summary))
+            if not summary.empty and (summary["n_questions_scored"] < summary["n_questions_expected"]).any():
+                st.caption("An average can be based on only part of the form. Compare Questions with scores with Selected questions before interpreting it.")
+            needs_review = summary.empty or summary["average"].isna().any()
+            with st.expander("Why is a form average blank?", expanded=needs_review):
+                st.dataframe(pd.DataFrame(appd_tools.scoring_diagnostics(state, selected)), hide_index=True, width="stretch")
+                st.caption("Adding PGY or a start date is not required to calculate an EPA average.")
+    with pgy_tab:
+        st.caption("One row per completed evaluation. PGY uses Date Completed and the July 1 start date saved in Admin > Resident roster. Missing dates are flagged, not inferred from upload time. A summary spanning two training years can display both PGYs.")
+        st.dataframe(pgy_records, hide_index=True, width="stretch")
+        st.download_button("Download assessment PGYs CSV", data=csv_bytes(pgy_records),
+                           file_name="EPA_assessment_PGYs.csv", mime="text/csv", on_click="ignore")
     with questions_tab:
         st.caption("Final average for each question over the selected months, with its own scored-response count.")
         table(public_frame(questions), height=500)
@@ -413,7 +441,7 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
         sheets = {
             "EPA averages": public_frame(summary), "Question averages": public_frame(questions),
             "Monthly EPA": public_frame(monthly), "Cumulative EPA": public_frame(cumulative),
-            "Response audit": public_frame(selected), "Report notes": notes,
+            "Response audit": public_frame(selected), "Assessment PGYs": pgy_records, "Report notes": notes,
         }
         if st.button("Prepare Excel report", type="primary"):
             try:

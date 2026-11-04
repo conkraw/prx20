@@ -21,9 +21,10 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from epa_core import clean_text, match_form, normalize_code, normalize_key, score_rows, utc_now
+from epa_pgy import as_date, pgy_number, has_start_date, validated_start_date, pgy_from_start, pgy_label
 
 # Bump when calculation behavior changes so old CCC approvals cannot be reused.
-CALCULATION_VERSION = "evaluation-first-multiepa-2026-11-03-v2"
+CALCULATION_VERSION = "evaluation-first-start-date-pgy-v3"
 EPA_COLUMNS = [f"EPA {n}" for n in range(1, 13)]
 APPD_CODES = ("0", "1", "2a", "2b", "3a", "3b", "4", "5")
 HEADERS = ["programid", "assessmentdate", "name_or_program_assigned_ID", "pgy", "season", "mapping"] + EPA_COLUMNS
@@ -45,38 +46,6 @@ S = "{" + SHEET_NS + "}"
 def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str,
                                      allow_nan=False).encode("utf-8")).hexdigest()
-
-
-def as_date(value: Any) -> date | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value).strip()
-    if not text or text.lower() in {"nan", "nat", "none", "<na>"}:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-    except (ValueError, TypeError):
-        pass
-    for fmt in ("%m/%d/%Y", "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            pass
-    return None
-
-
-def pgy_number(value: Any) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    text = clean_text(value)
-    m = re.fullmatch(r"(?:PGY\s*[-:]?\s*)?(\d{1,2})(?:\.0+)?", text, re.I)
-    if m and 1 <= int(m.group(1)) <= 15:
-        return int(m.group(1))
-    return None
 
 
 def academic_year(day: date, start_month: int = 7) -> int:
@@ -288,14 +257,120 @@ def detected_pgy(state: dict, resident_key: str, year: int) -> tuple[int | None,
 
 
 def resolve_pgy(state: dict, resident_key: str, assessment_date: date | None) -> tuple[int | None, str]:
+    assessment_date = as_date(assessment_date)
     if assessment_date is None:
         return None, "An assessment date is required to determine PGY."
-    year = academic_year(assessment_date, state.get("settings", {}).get("academic_year_start_month", 7))
     roster = state.get("settings", {}).get("appd_roster", {}).get(resident_key, {})
+    # A saved start date is authoritative. Do not fall back to an old yearly PGY
+    # when the start date is invalid or the assessment precedes residency.
+    if has_start_date(roster):
+        return pgy_from_start(roster["residency_start_date"], assessment_date)
+    year = academic_year(assessment_date, state.get("settings", {}).get("academic_year_start_month", 7))
     override = pgy_number(roster.get("pgy_by_academic_year", {}).get(str(year)))
     if override is not None:
-        return override, f"Saved roster for academic year {year}-{year + 1}"
+        return override, f"Saved manual PGY for academic year {year}-{year + 1} (no start date)"
     return detected_pgy(state, resident_key, year)
+
+
+def save_roster(state: dict, updates: dict, expected_roster: str) -> dict:
+    """Save start dates and identifiers with a concurrent-edit guard.
+
+    Legacy manual years and other metadata are preserved. They are fallback
+    values only when the resident has no saved start date.
+    """
+    stored = state.get("settings", {}).get("appd_roster", {})
+    if digest(stored) != expected_roster:
+        raise ValueError("The resident roster changed in another session. Reload before saving.")
+    names = residents_in(state)
+    updated = copy.deepcopy(state)
+    roster = updated.setdefault("settings", {}).setdefault("appd_roster", {})
+    for key, values in updates.items():
+        if key not in names:
+            raise ValueError("A resident is no longer in the roster. Reload before saving.")
+        identifier = clean_text(values.get("export_id"))
+        if not identifier or identifier in {"<NA>", "NaT", "nan", "None"}:
+            raise ValueError(f"Enter an APPD name or ID for {names[key]}.")
+        try:
+            start = validated_start_date(values.get("residency_start_date"))
+        except ValueError as exc:
+            raise ValueError(f"{names[key]}: {exc}") from None
+        row = roster.setdefault(key, {"resident": names[key]})
+        row["export_id"] = identifier
+        row["residency_start_date"] = start.isoformat() if start else ""
+        if "manual_year" in values:
+            year = int(values["manual_year"])
+            raw = values.get("manual_pgy")
+            pgy = pgy_number(raw)
+            if raw is not None and str(raw).strip().lower() not in {"", "nan", "none", "<na>"} and pgy is None:
+                raise ValueError(f"Enter a whole-number PGY from 1 to 15 for {names[key]}.")
+            years = row.setdefault("pgy_by_academic_year", {})
+            if pgy is None:
+                years.pop(str(year), None)
+            else:
+                years[str(year)] = pgy
+    return updated
+
+
+def apply_start_date_pgys(state: dict, rows: list[dict]) -> list[dict]:
+    """Recalculate at the edited assessment date before display, save, and export.
+
+    Without a start date, retain existing explicit review PGYs for compatibility.
+    """
+    normalized = normalize_review_rows(rows)
+    roster = state.get("settings", {}).get("appd_roster", {})
+    for row in normalized:
+        if has_start_date(roster.get(row["resident_key"], {})):
+            row["pgy"], _ = resolve_pgy(state, row["resident_key"], as_date(row["assessmentdate"]))
+    return normalized
+
+
+def assessment_pgy_rows(state: dict, record_ids=None) -> list[dict]:
+    """One historical PGY per completed evaluation, never a current-age label."""
+    selected = set(record_ids) if record_ids is not None else None
+    roster = state.get("settings", {}).get("appd_roster", {})
+    result = []
+    for rid, record in state.get("evaluations", {}).items():
+        if selected is not None and rid not in selected:
+            continue
+        day = as_date(record.get("completed_at"))
+        pgy, source = resolve_pgy(state, record["resident_key"], day)
+        fid = match_form(record, state.get("forms", {})).get("form_id")
+        result.append({"Resident": record["resident"],
+                       "Form": state.get("forms", {}).get(fid, {}).get("name", "Unrecognized form"),
+                       "Assessment date": day.isoformat() if day else "",
+                       "PGY": pgy_label(pgy),
+                       "Residency start date": roster.get(record["resident_key"], {}).get("residency_start_date", ""),
+                       "PGY source / issue": source,
+                       "Evaluator": record.get("evaluator", ""), "Evaluation ID": rid})
+    return sorted(result, key=lambda r: (r["Resident"].casefold(), r["Assessment date"], r["Evaluation ID"]))
+
+
+def scoring_diagnostics(state: dict, rows) -> list[dict]:
+    """Explain form-level blanks without enabling unconfirmed scales."""
+    results = []
+    if rows.empty:
+        return results
+    for fid, group in rows.groupby("form_id", sort=False):
+        form = state["forms"][fid]
+        selected = group.loc[group["included"].astype(bool)]
+        statuses = selected["status"].value_counts().to_dict()
+        reasons = []
+        if not form.get("scoring_confirmed"):
+            reasons.append("Forms: review and save the scoring scale.")
+        if selected.empty:
+            reasons.append("Forms: select the questions to include in averages.")
+        if statuses.get("unmapped", 0):
+            reasons.append("Forms: map the unrecognized response codes.")
+        if not statuses.get("scored", 0) and not reasons:
+            reasons.append("No scored responses in this selection. All selected responses are blank or excluded.")
+        results.append({"Form": form["name"], "Evaluations": int(group["record_id"].nunique()),
+                        "Selected questions": int(selected["question_id"].nunique()),
+                        "Scored ratings": int(statuses.get("scored", 0)),
+                        "Blank": int(statuses.get("blank", 0)),
+                        "Excluded": int(statuses.get("excluded", 0)),
+                        "Needs scoring review": int(statuses.get("unmapped", 0) + statuses.get("unconfirmed", 0)),
+                        "Action": " ".join(reasons) or "Scored responses are available."})
+    return results
 
 
 def input_fingerprint(state: dict, config: dict) -> str:
@@ -313,12 +388,15 @@ def review_key(config: dict) -> str:
     return digest([config["programid"], config["mapping"], config["season"], config["year"]])[:24]
 
 
-def build_draft(state: dict, config: dict | None = None) -> dict:
+def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> dict:
     config = copy.deepcopy(config or config_for(state))
     validate_config(config)
     start, end = as_date(config["start_date"]), as_date(config["end_date"])
     eligible, missing_dates = {}, 0
+    selected_ids = set(record_ids) if record_ids is not None else None
     for rid, record in state.get("evaluations", {}).items():
+        if selected_ids is not None and rid not in selected_ids:
+            continue
         day = as_date(record.get(config["date_basis"]))
         if day is None:
             missing_dates += 1
@@ -334,11 +412,31 @@ def build_draft(state: dict, config: dict | None = None) -> dict:
     if state.get("conflicts"):
         warnings.append(f"{len(state['conflicts'])} upload conflicts remain in Review. Pending alternatives are not used.")
     good_links = {}
+    mapping_issues = {}
+    form_notices = []
     coverage_ready = True
     for fid, form in state.get("forms", {}).items():
         mapping = mapping_for(state, fid)
         used = any(match_form(record, state["forms"]).get("form_id") == fid for record in eligible.values())
         valid = mapping.get("confirmed") and mapping.get("form_signature") == form_signature(form)
+        form_issues = []
+        if used and not valid:
+            mapping_issues[fid] = "Admin > Question mapping: save and confirm the links for this form."
+            form_issues.append(mapping_issues[fid])
+        if used and not mapping.get("questions"):
+            form_issues.append("No questions are linked to EPA 1-12. Link the appropriate questions in Admin.")
+        if used and not form.get("scoring_confirmed"):
+            form_issues.append("Forms: review and confirm the numeric scoring scale.")
+        if used:
+            linked = set(mapping.get("questions", {}))
+            excluded = [str(q["id"]) for q in form["questions"] if str(q["id"]) in linked and not q.get("include")]
+            if excluded:
+                form_issues.append("Mapped questions excluded in Forms: " + ", ".join(excluded))
+            form_notices.append({"Form": form["name"],
+                                 "Evaluations": sum(match_form(r, state["forms"]).get("form_id") == fid for r in eligible.values()),
+                                 "Linked questions": len(linked),
+                                 "Mapping ready": bool(valid), "Scoring ready": bool(form.get("scoring_confirmed")),
+                                 "Action": " ".join(form_issues) or "Ready. Only valid scored responses contribute."})
         if valid:
             good_links[fid] = mapping.get("questions", {})
             excluded_links = [q["id"] for q in form["questions"] if q.get("id") in good_links[fid] and not q.get("include")]
@@ -375,7 +473,9 @@ def build_draft(state: dict, config: dict | None = None) -> dict:
                 "Question ID": item["question_id"], "Question": item["question"],
                 "Original response": item["raw_response"], "Numeric score": float(score) if valid else None,
                 "Status": item["status"], "Session date": item.get("session_date"),
-                "Date completed": item.get("completed_at"), "Evaluation ID": item["record_id"],
+                "Date completed": item.get("completed_at"),
+                "PGY at assessment": pgy_label(resolve_pgy(state, item["resident_key"], as_date(item.get("completed_at")))[0]),
+                "Evaluation ID": item["record_id"],
             })
     group_values, eval_means = defaultdict(list), defaultdict(list)
     evaluation_scores, form_values = [], defaultdict(list)
@@ -393,6 +493,7 @@ def build_draft(state: dict, config: dict | None = None) -> dict:
             "Evaluation average": evaluation_average,
             "Scored questions": len(values), "Mapped questions": mapped_count,
             "Session date": record.get("session_date"), "Date completed": record.get("completed_at"),
+            "PGY at assessment": pgy_label(resolve_pgy(state, key, as_date(record.get("completed_at")))[0]),
             "Evaluation ID": rid,
         })
     form_summaries = [
@@ -419,13 +520,32 @@ def build_draft(state: dict, config: dict | None = None) -> dict:
                "PGY source": source}
         if day and day.year != config["year"]:
             warnings.append(f"{names.get(key, key)}: latest assessment date is outside the reporting year. Review the date or select a CCC date.")
+        if pgy is None:
+            warnings.append(f"{row['Resident']}: {source}")
+        resident_forms = {match_form(r, state.get("forms", {})).get("form_id") for r in records}
+        pending_maps = any(fid in mapping_issues for fid in resident_forms if fid is not None)
         for epa in EPA_COLUMNS:
             values, evaluations = group_values[(key, epa)], eval_means[(key, epa)]
             avg = mean(evaluations) if evaluations else None
             row[epa] = suggested_level(avg, config)
+            linked_here = any(epa in targets for fid in resident_forms
+                              for targets in good_links.get(fid, {}).values())
+            if avg is not None:
+                status = "Calculated"
+                if blocked[(key, epa)] or pending_maps or None in resident_forms:
+                    status = "Calculated from available scores. Some evidence needs review."
+            elif blocked[(key, epa)]:
+                status = "Linked questions need scoring review in Forms."
+            elif pending_maps:
+                status = "Question mapping is missing, unconfirmed, or changed. Review Admin."
+            elif not linked_here:
+                status = "No questions linked to this EPA in this resident's selected evaluations."
+            else:
+                status = "Linked responses are blank or excluded. No scored evidence."
             summaries.append({"resident_key": key, "Resident": row["Resident"], "APPD EPA": epa,
+                              "Assessment date": row["assessmentdate"], "PGY": pgy_label(pgy),
                               "Average": avg, "Local level": local_display_level(avg, config),
-                              "Ratings": len(values), "Evaluations": len(evaluations),
+                              "Calculation status": status, "Ratings": len(values), "Evaluations": len(evaluations),
                               "Needs scoring review": blocked[(key, epa)], "Suggested level": row[epa]})
         rows.append(row)
     questions = []
@@ -435,8 +555,48 @@ def build_draft(state: dict, config: dict | None = None) -> dict:
                           "Average": mean(values), "Ratings": len(values)})
     return {"rows": rows, "summary": summaries, "questions": questions, "evidence": evidence,
             "evaluation_scores": evaluation_scores, "form_summaries": form_summaries,
+            "form_diagnostics": form_notices,
             "warnings": list(dict.fromkeys(warnings)), "fingerprint": input_fingerprint(state, config),
             "config": config, "coverage_ready": coverage_ready and not any(blocked.values())}
+
+
+def dashboard_mapped_draft(state: dict, rows, date_basis: str = "session_date") -> dict:
+    """Use exactly the dashboard's selected evaluations, not APPD export filters."""
+    ids = set(rows["record_id"]) if not rows.empty else set()
+    days = [as_date(r.get(date_basis)) for rid, r in state.get("evaluations", {}).items() if rid in ids]
+    days = [day for day in days if day is not None]
+    cfg = config_for(state)
+    if days:
+        cfg.update(start_date=min(days).isoformat(), end_date=max(days).isoformat())
+    cfg.update(date_basis=date_basis, assessment_date_mode="latest_completed",
+               conversion_enabled=False, conversion_confirmed=False)
+    cfg["programid"] = cfg.get("programid") or "Local dashboard"
+    return build_draft(state, cfg, record_ids=ids)
+
+
+def annotate_summary_pgys(state: dict, report, source_rows, *, cumulative=False):
+    """Show every PGY represented in an aggregate rather than today's PGY.
+
+    Rows spanning a July boundary can contain PGY1 / PGY2. Missing PGYs are
+    explicitly marked, rather than hidden behind the latest assessed year.
+    """
+    result = report.copy()
+    if result.empty:
+        return result
+    by_id = {row["Evaluation ID"]: row["PGY"] for row in assessment_pgy_rows(state, set(source_rows["record_id"]))}
+    labels = []
+    for _, row in result.iterrows():
+        selected = source_rows.loc[source_rows["resident_key"].eq(row["resident_key"]) & source_rows["form_id"].eq(row["form_id"])]
+        if "period" in row.index and "period" in selected.columns:
+            selected = selected.loc[selected["period"].le(row["period"]) if cumulative else selected["period"].eq(row["period"])]
+        pgys = {by_id.get(rid, "") for rid in selected["record_id"].unique()}
+        numbers = sorted({pgy_number(p) for p in pgys if pgy_number(p) is not None})
+        label = " / ".join(pgy_label(n) for n in numbers)
+        if "" in pgys:
+            label += (" / " if label else "") + "PGY not set"
+        labels.append(label)
+    result.insert(result.columns.get_loc("resident") + 1, "assessment_pgys", labels)
+    return result
 
 
 def normalize_review_rows(rows: list[dict]) -> list[dict]:
@@ -489,7 +649,7 @@ def save_review(state: dict, config: dict, rows: list[dict], expected_fingerprin
                 *, approved: bool, reviewer: str = "") -> dict:
     if input_fingerprint(state, config_for(state)) != expected_fingerprint:
         raise ValueError("The evaluations or APPD setup changed. Reload and review the current scores before saving.")
-    normalized = normalize_review_rows(rows)
+    normalized = apply_start_date_pgys(state, rows)
     current_keys = {row["resident_key"] for row in build_draft(state, config)["rows"]}
     if len({r["resident_key"] for r in normalized}) != len(normalized) or {r["resident_key"] for r in normalized} != current_keys:
         raise ValueError("The resident rows changed. Reload the current export review.")
@@ -511,6 +671,8 @@ def approved_review(state: dict, config: dict) -> dict | None:
     if not saved or not saved.get("approved"):
         return None
     if saved.get("input_fingerprint") != input_fingerprint(state, config):
+        return None
+    if digest(apply_start_date_pgys(state, saved.get("rows", []))) != digest(normalize_review_rows(saved.get("rows", []))):
         return None
     if validate_review(saved.get("rows", []), config):
         return None
