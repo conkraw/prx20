@@ -27,6 +27,7 @@ from epa_storage import GitHubStore, StorageError
 from epa_pdf import build_question_pdf
 from epa_appd_ui import admin_page as appd_admin_page, export_page as appd_export_page
 from epa_appd import config_for as appd_config_for, local_display_level
+from epa_form_ui import apply_form_removal_session_cleanup, render_form_removal
 
 
 ROOT = Path(__file__).resolve().parent
@@ -265,7 +266,7 @@ def render_sidebar_pdf(state: dict, view: tuple[pd.DataFrame, dict] | None = Non
 def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
     st.header("Resident progress")
     if not state["evaluations"]:
-        st.info("Upload your evaluation files to begin. Acutes and Adolescent Medicine forms are already available under Forms.")
+        st.info("Upload your evaluation files to begin. You can manage remembered form definitions under Forms.")
         return
     rows = score_rows(state)
     unrecognized = recognition_rows(state)
@@ -579,7 +580,8 @@ def forms_page(state: dict, store: GitHubStore) -> None:
         st.info("Upload a form definition first.")
         return
     form_id = st.selectbox("Form", sorted(state["forms"], key=lambda k: state["forms"][k]["name"]),
-                           format_func=lambda k: state["forms"][k]["name"])
+                           format_func=lambda k: state["forms"][k]["name"], key="form_to_edit")
+    render_form_removal(state, store, commit, form_id)
     form = state["forms"][form_id]
     version = fingerprint(form)
     prefix = f"form_{form_id}_{version[:10]}"
@@ -787,6 +789,7 @@ def main() -> None:
                 logout()
                 st.rerun()
             st.stop()
+    apply_form_removal_session_cleanup()
     state = st.session_state["archive"]
     with st.sidebar:
         st.title("EPA Tracker")
