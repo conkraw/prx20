@@ -25,19 +25,19 @@ from epa_core import (
 )
 from epa_storage import GitHubStore, StorageError
 from epa_pdf import build_question_pdf
-from epa_appd_ui import admin_page as appd_admin_page, export_page as appd_export_page
-from epa_appd import config_for as appd_config_for, local_display_level
+from epa_simple_ui import admin_page as appd_admin_page, export_page as appd_export_page
+from epa_appd import config_for as appd_config_for
 import epa_appd as appd_tools
 from epa_appd_ui import calculated_overview
 from epa_form_ui import apply_form_removal_session_cleanup, render_form_removal
 
 
 ROOT = Path(__file__).resolve().parent
-NAVIGATION = ["Dashboard", "Upload", "Forms", "Review", "APPD Export", "Admin", "Settings"]
+NAVIGATION = ["Dashboard", "Upload", "APPD Export", "Admin"]
 REPORT_FILTERS_KEY = "_epa_report_filters"
 LABELS = {
     "resident": "Resident", "assessment_pgys": "PGY at assessments", "epa": "EPA", "question_id": "Question ID",
-    "question": "Question", "average": "Average", "local_level": "Local level", "n": "Scored ratings",
+    "question": "Question", "average": "Average", "n": "Scored ratings",
     "n_missing": "Blank", "n_excluded": "Excluded by scale",
     "n_unmapped": "Needs scoring review", "n_evaluations": "Evaluations",
     "n_scored_evaluations": "Scored evaluations", "n_ratings": "Scored ratings",
@@ -268,67 +268,68 @@ def render_sidebar_pdf(state: dict, view: tuple[pd.DataFrame, dict] | None = Non
 def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
     st.header("Resident progress")
     if not state["evaluations"]:
-        st.info("Upload your evaluation files to begin. You can manage remembered form definitions under Forms.")
+        st.info("Upload your evaluation files to begin. You can manage remembered form definitions under Admin > Forms and EPA mapping.")
         return
     rows = score_rows(state)
     unrecognized = recognition_rows(state)
     if unrecognized:
         st.warning(f"{len(unrecognized)} evaluations need a matching form. Upload the form definition to include them in reports.")
     if state["conflicts"]:
-        st.warning(f"{len(state['conflicts'])} possible duplicates or corrections are waiting in Review. Incoming versions are not counted until resolved.")
+        st.warning(f"{len(state['conflicts'])} possible duplicates or corrections are waiting in Admin > Data review. Incoming versions are not counted until resolved.")
     if pending_forms(state):
-        st.info(f"{pending_forms(state)} forms need scoring confirmation in Forms. Their ratings remain unscored until you save the scale.")
+        st.info(f"{pending_forms(state)} forms need scoring confirmation in Admin > Forms and EPA mapping. Their ratings remain unscored until you save the scale.")
     if rows.empty:
         st.info("Your evaluations are saved. Add their form definitions under Upload to recognize the question IDs.")
         return
 
     start_month = state["settings"].get("academic_year_start_month", 7)
     preferences = st.session_state.get(REPORT_FILTERS_KEY, {})
-    date_label = st.radio("Track by", ["Session month", "Completion month"], horizontal=True,
-                          index=1 if preferences.get("date_basis") == "completed_at" else 0,
-                          key="dashboard_date_basis",
-                          help="Session month follows the export's Session Date, which may be the rotation start. Completion month follows Date Completed.")
-    basis = "session_date" if date_label == "Session month" else "completed_at"
-    all_periods = filter_rows(rows, start_month=start_month, date_basis=basis)
-    now = datetime.now(ZoneInfo("America/New_York"))
-    current_year = now.year - (now.month < start_month)
-    years = sorted({current_year, *all_periods["academic_year"].dropna().astype(int).tolist()}, reverse=True)
-    year_label = lambda y: str(y) if start_month == 1 else f"{y}-{y + 1}"
-    left, right = st.columns([1, 3])
-    same_year_start = preferences.get("start_month", start_month) == start_month
-    preferred_year = preferences.get("academic_year", current_year) if same_year_start else current_year
-    with left:
-        year = st.selectbox("Academic year", years, format_func=year_label,
-                            index=years.index(preferred_year) if preferred_year in years else 0,
-                            key=f"dashboard_year_{start_month}")
-    ordered_months = [(start_month + i - 1) % 12 + 1 for i in range(12)]
-    with right:
-        preferred_months = preferences.get("months", ordered_months) if same_year_start else ordered_months
-        months = st.multiselect("Months", ordered_months, default=preferred_months,
-                                format_func=lambda m: calendar.month_abbr[m],
-                                key=f"months_{start_month}")
-    col1, col2 = st.columns(2)
-    resident_names = rows.drop_duplicates("resident_key").set_index("resident_key")["resident"].to_dict()
-    with col1:
-        resident_keys = st.multiselect("Residents", sorted(resident_names), format_func=lambda k: resident_names[k],
-                                       default=[key for key in preferences.get("residents", []) if key in resident_names],
-                                       key="dashboard_residents", placeholder="All residents")
-    forms = state["forms"]
-    with col2:
-        form_ids = st.multiselect("EPAs", sorted(forms, key=lambda k: forms[k]["name"]),
-                                  format_func=lambda k: forms[k]["name"],
-                                  default=[key for key in preferences.get("form_ids", []) if key in forms],
-                                  key="dashboard_epas", placeholder="All EPAs")
-    st.session_state[REPORT_FILTERS_KEY] = {
-        "academic_year": year, "start_month": start_month, "months": list(months),
-        "date_basis": basis, "residents": list(resident_keys), "form_ids": list(form_ids),
-    }
+    with st.expander("Report filters", expanded=False):
+        date_label = st.radio("Track by", ["Session month", "Completion month"], horizontal=True,
+                              index=1 if preferences.get("date_basis") == "completed_at" else 0,
+                              key="dashboard_date_basis",
+                              help="Session month follows the export's Session Date, which may be the rotation start. Completion month follows Date Completed.")
+        basis = "session_date" if date_label == "Session month" else "completed_at"
+        all_periods = filter_rows(rows, start_month=start_month, date_basis=basis)
+        now = datetime.now(ZoneInfo("America/New_York"))
+        current_year = now.year - (now.month < start_month)
+        years = sorted({current_year, *all_periods["academic_year"].dropna().astype(int).tolist()}, reverse=True)
+        year_label = lambda y: str(y) if start_month == 1 else f"{y}-{y + 1}"
+        left, right = st.columns([1, 3])
+        same_year_start = preferences.get("start_month", start_month) == start_month
+        preferred_year = preferences.get("academic_year", current_year) if same_year_start else current_year
+        with left:
+            year = st.selectbox("Academic year", years, format_func=year_label,
+                                index=years.index(preferred_year) if preferred_year in years else 0,
+                                key=f"dashboard_year_{start_month}")
+        ordered_months = [(start_month + i - 1) % 12 + 1 for i in range(12)]
+        with right:
+            preferred_months = preferences.get("months", ordered_months) if same_year_start else ordered_months
+            months = st.multiselect("Months", ordered_months, default=preferred_months,
+                                    format_func=lambda m: calendar.month_abbr[m],
+                                    key=f"months_{start_month}")
+        col1, col2 = st.columns(2)
+        resident_names = rows.drop_duplicates("resident_key").set_index("resident_key")["resident"].to_dict()
+        with col1:
+            resident_keys = st.multiselect("Residents", sorted(resident_names), format_func=lambda k: resident_names[k],
+                                           default=[key for key in preferences.get("residents", []) if key in resident_names],
+                                           key="dashboard_residents", placeholder="All residents")
+        forms = state["forms"]
+        with col2:
+            form_ids = st.multiselect("Forms", sorted(forms, key=lambda k: forms[k]["name"]),
+                                      format_func=lambda k: forms[k]["name"],
+                                      default=[key for key in preferences.get("form_ids", []) if key in forms],
+                                      key="dashboard_epas", placeholder="All forms")
+        st.session_state[REPORT_FILTERS_KEY] = {
+            "academic_year": year, "start_month": start_month, "months": list(months),
+            "date_basis": basis, "residents": list(resident_keys), "form_ids": list(form_ids),
+        }
     year_rows = filter_rows(rows, academic_year=year, start_month=start_month, date_basis=basis,
                             residents=resident_keys or None, form_ids=form_ids or None)
     selected = filter_rows(year_rows, months=months, start_month=start_month, date_basis=basis)
     undated = int(rows.loc[pd.to_datetime(rows[basis], errors="coerce", format="mixed").isna(), "record_id"].nunique())
     if undated:
-        st.warning(f"{undated} evaluations have no valid {date_label.lower().replace(' month', ' date')} and are excluded from dated reports. See Review.")
+        st.warning(f"{undated} evaluations have no valid {date_label.lower().replace(' month', ' date')} and are excluded from dated reports. See Admin > Data review.")
     if not months:
         st.info("Select at least one month.")
         return
@@ -341,11 +342,6 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
     cumulative = monthly_summary(year_rows, cumulative=True)
     if not cumulative.empty:
         cumulative = cumulative.loc[cumulative["period"].str[-2:].astype(int).isin(months)]
-    display_config = appd_config_for(state)
-    for report in (summary, monthly, cumulative):
-        if not report.empty:
-            report.insert(report.columns.get_loc("average") + 1, "local_level",
-                          report["average"].map(lambda value: local_display_level(value, display_config)))
     summary = appd_tools.annotate_summary_pgys(state, summary, selected)
     questions = appd_tools.annotate_summary_pgys(state, questions, selected)
     monthly = appd_tools.annotate_summary_pgys(state, monthly, selected)
@@ -353,14 +349,14 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
     pgy_records = pd.DataFrame(appd_tools.assessment_pgy_rows(state, set(selected["record_id"])))
     unmapped = selected.loc[selected["status"].eq("unmapped")]
     if not unmapped.empty:
-        st.warning(f"{len(unmapped)} responses use codes missing from the saved scale. They are excluded from the averages until you map them in Forms.")
+        st.warning(f"{len(unmapped)} responses use codes missing from the saved scale. They are excluded from the averages until you map them in Admin > Forms and EPA mapping.")
     counters = st.columns(4)
     counters[0].metric("Residents", selected["resident_key"].nunique())
-    counters[1].metric("EPAs", selected["form_id"].nunique())
+    counters[1].metric("Forms", selected["form_id"].nunique())
     counters[2].metric("Evaluations", selected["record_id"].nunique())
     counters[3].metric("Scored ratings", int(selected["status"].eq("scored").sum()))
-    summary_tab, questions_tab, trends_tab, pgy_tab, export_tab = st.tabs(["EPA averages", "Each question", "Monthly progress", "Assessment PGY", "Download"])
-    with summary_tab:
+    report_type = st.selectbox("Report", ["EPA averages", "Question averages", "Monthly progress", "Assessment PGY", "Download reports"], key="dashboard_report_type")
+    if report_type == "EPA averages":
         has_links = any(value.get("confirmed") and value.get("questions")
                         for value in state["settings"].get("appd_question_maps", {}).values())
         view = st.radio("Average summary", ["By evaluation form", "Mapped EPA 1-12"],
@@ -374,7 +370,7 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
             except (ValueError, TypeError, KeyError) as exc:
                 st.error(f"Review the saved question mapping or scoring setup: {exc}")
         else:
-            st.caption("Local level is your display label, not an APPD supervision category. These averages combine the selected questions within each form. Choose Mapped EPA 1-12 above to combine the questions linked to each EPA.")
+            st.caption("Form averages combine selected questions on the same form. Mapped EPA 1-12 combines questions linked to each EPA across forms.")
             table(public_frame(summary))
             if not summary.empty and (summary["n_questions_scored"] < summary["n_questions_expected"]).any():
                 st.caption("An average can be based on only part of the form. Compare Questions with scores with Selected questions before interpreting it.")
@@ -382,15 +378,15 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
             with st.expander("Why is a form average blank?", expanded=needs_review):
                 st.dataframe(pd.DataFrame(appd_tools.scoring_diagnostics(state, selected)), hide_index=True, width="stretch")
                 st.caption("Adding PGY or a start date is not required to calculate an EPA average.")
-    with pgy_tab:
-        st.caption("One row per completed evaluation. PGY uses Date Completed and the July 1 start date saved in Admin > Resident roster. Missing dates are flagged, not inferred from upload time. A summary spanning two training years can display both PGYs.")
+    elif report_type == "Assessment PGY":
+        st.caption("One row per completed evaluation. PGY uses Date Completed and the July 1 start date saved in Admin > Residents. Missing dates are flagged, not inferred from upload time. A summary spanning two training years can display both PGYs.")
         st.dataframe(pgy_records, hide_index=True, width="stretch")
         st.download_button("Download assessment PGYs CSV", data=csv_bytes(pgy_records),
                            file_name="EPA_assessment_PGYs.csv", mime="text/csv", on_click="ignore")
-    with questions_tab:
+    elif report_type == "Question averages":
         st.caption("Final average for each question over the selected months, with its own scored-response count.")
         table(public_frame(questions), height=500)
-    with trends_tab:
+    elif report_type == "Monthly progress":
         trend_kind = st.radio("Progress view", ["Each month", "Cumulative from academic-year start"], horizontal=True)
         trend_data = monthly if trend_kind == "Each month" else cumulative
         st.caption("Cumulative results use all earlier months of this academic year, including earlier months hidden by the filter. Empty months are not zero." if trend_kind != "Each month" else "Each point uses only that month's evaluations. Months without ratings remain blank.")
@@ -418,9 +414,9 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
                 chart_data = trend_data
             draw_chart(chart_data, year, start_month, months)
         else:
-            st.info("Confirm the scoring scales under Forms to show progress.")
+            st.info("Confirm the scoring scales under Admin > Forms and EPA mapping to show progress.")
         table(public_frame(trend_data), height=350)
-    with export_tab:
+    elif report_type == "Download reports":
         month_names = ", ".join(calendar.month_abbr[m] for m in ordered_months if m in months)
         notes = pd.DataFrame([
             {"Setting": "Academic year", "Value": year_label(year)},
@@ -429,7 +425,6 @@ def dashboard(state: dict) -> tuple[pd.DataFrame, dict] | None:
             {"Setting": "Date basis", "Value": date_label},
             {"Setting": "Question average", "Value": "Sum of mapped scores / number of scored responses for that question."},
             {"Setting": "Overall EPA average", "Value": "Mean of within-evaluation averages, with equal weight for each evaluation with a valid score. Not an official entrustment decision."},
-            {"Setting": "Local level", "Value": f"Display only, not an APPD category. Whole numbers remain whole. Fractional order: {display_config['local_fraction_order']}, cutoff: {display_config['local_fraction_cutoff']}. Uses unrounded averages."},
             {"Setting": "Cumulative", "Value": "Recalculated from all evaluations from academic-year start through each displayed month, even if earlier months are hidden."},
             {"Setting": "Missing values", "Value": "Blank, excluded, unconfirmed, and unmapped values are excluded from the score denominator. Missing is not zero."},
             {"Setting": "Pending conflicts", "Value": str(len(state["conflicts"]))},
@@ -519,7 +514,7 @@ def upload_page(state: dict, store: GitHubStore) -> None:
             form = item["form"]
             known = form["id"] in state["forms"]
             if not known and form["id"] not in names:
-                names[form["id"]] = st.text_input(f"EPA name for {item['filename']}", value=form["name"], key=f"new_name_{form['id']}")
+                names[form["id"]] = st.text_input(f"Form name for {item['filename']}", value=form["name"], key=f"new_name_{form['id']}")
             proposed_name = names.get(form["id"])
             proposed = register_form(proposed, form, proposed_name if proposed_name and proposed_name.strip() else None)
             preview_rows.append({"File": item["filename"], "Type": "Form definition", "Rows": len(form["questions"]), "Result": "Already remembered" if known else "New form"})
@@ -602,7 +597,7 @@ def read_scale(frame: pd.DataFrame) -> dict:
 
 
 def forms_page(state: dict, store: GitHubStore) -> None:
-    st.header("Remembered forms")
+    st.subheader("Forms and EPA mapping")
     st.caption("The app identifies forms by their question IDs. Review the scoring once for each new form.")
     if not state["forms"]:
         st.info("Upload a form definition first.")
@@ -612,17 +607,30 @@ def forms_page(state: dict, store: GitHubStore) -> None:
     render_form_removal(state, store, commit, form_id)
     form = state["forms"][form_id]
     version = fingerprint(form)
-    prefix = f"form_{form_id}_{version[:10]}"
+    saved_mapping = appd_tools.mapping_for(state, form_id)
+    baseline_mapping = appd_tools.digest(saved_mapping)
+    prefix = f"form_{form_id}_{version[:10]}_{baseline_mapping[:10]}"
     if not form.get("scoring_confirmed"):
         st.warning("Scoring is not confirmed. The starting scale proposes scores 1-5 and excludes code 6. Check the actual response labels before saving. No ratings from this form are averaged yet.")
-    name = st.text_input("EPA name", form["name"], key=f"{prefix}_name")
-    qframe = pd.DataFrame([{"Include": bool(q.get("include")), "Question ID": q["id"], "Question": q["text"]} for q in form["questions"]])
-    st.subheader("Questions to average")
-    edited = st.data_editor(qframe, hide_index=True, disabled=["Question ID", "Question"], width="stretch", key=f"{prefix}_questions",
-                            column_config={"Include": st.column_config.CheckboxColumn(), "Question": st.column_config.TextColumn(width="large")})
+    name = st.text_input("Form name", form["name"], key=f"{prefix}_name")
+    links = saved_mapping.get("questions", {})
+    mapping_fresh = saved_mapping.get("form_signature") == appd_tools.form_signature(form)
+    if saved_mapping and not mapping_fresh:
+        st.warning("Question wording changed. Review and confirm the EPA links again.")
+    st.subheader("Questions and EPA links")
+    st.caption("Each question can contribute to more than one EPA. Use Include for numeric reports. Select the EPA links needed for the Data Hub summary.")
     proposed_questions = copy.deepcopy(form["questions"])
-    for question, include in zip(proposed_questions, edited["Include"]):
-        question["include"] = bool(include)
+    proposed_links = {}
+    for question in proposed_questions:
+        qid = str(question["id"])
+        left, right = st.columns([3, 2])
+        with left:
+            question["include"] = st.checkbox(f"{qid}: {question['text']}", value=bool(question.get("include")), key=f"{prefix}_include_{qid}")
+        with right:
+            proposed_links[qid] = st.multiselect(f"EPAs for question {qid}", appd_tools.EPA_COLUMNS,
+                                                default=links.get(qid, []), key=f"{prefix}_epas_{qid}",
+                                                placeholder="No EPA linked")
+    mapping_confirmed = st.checkbox("I reviewed these question-to-EPA links", value=bool(saved_mapping.get("confirmed") and mapping_fresh), key=f"{prefix}_map_confirmed")
     st.subheader("Response codes")
     st.caption("Use the labels on your original form to decide which codes count. Unchecked codes are retained but excluded. Blank responses are always excluded.")
     values = observed_codes(state, form_id, proposed_questions)
@@ -642,10 +650,10 @@ def forms_page(state: dict, store: GitHubStore) -> None:
                 question_codes = observed_codes(state, form_id, [{"id": override_id, "include": True}])
                 override = scale_editor(selected_question.get("score_map") or form["score_map"], question_codes, f"{prefix}_override_scale_{override_id}")
     confirmed = st.checkbox("I checked the selected questions and the meaning of the response codes", value=bool(form.get("scoring_confirmed")), key=f"{prefix}_confirmed")
-    if st.button("Save form and scoring", type="primary"):
+    if st.button("Save form setup", type="primary"):
         try:
             if not name.strip():
-                raise ValueError("Enter an EPA name.")
+                raise ValueError("Enter a form name.")
             if not any(q["include"] for q in proposed_questions):
                 raise ValueError("Select at least one question to average.")
             new_form = copy.deepcopy(form)
@@ -661,8 +669,11 @@ def forms_page(state: dict, store: GitHubStore) -> None:
             def apply(current):
                 if fingerprint(current["forms"].get(form_id)) != version:
                     raise ValueError("This form changed in another session. Reload saved data and review the new settings before saving.")
+                if appd_tools.digest(appd_tools.mapping_for(current, form_id)) != baseline_mapping:
+                    raise ValueError("Question links changed in another session. Reload before saving.")
                 current["forms"][form_id] = copy.deepcopy(new_form)
-                return current, "Form saved. Existing evaluations have been recalculated."
+                current = appd_tools.save_mapping(current, form_id, proposed_links, mapping_confirmed)
+                return current, "Form, scoring, and EPA links saved. Existing evaluations have been recalculated."
             if commit(store, apply):
                 st.session_state["notice"] = st.session_state["save_result"]
                 st.rerun()
@@ -740,7 +751,7 @@ def review_page(state: dict, store: GitHubStore) -> None:
         rows = score_rows(state)
         attention = rows.loc[rows["status"].isin(["unmapped", "unconfirmed"])]
         if not attention.empty:
-            st.caption("Edit the form's response codes in Forms. Unmapped and unconfirmed ratings are not counted in averages.")
+            st.caption("Edit the form's response codes in Admin > Forms and EPA mapping. Unmapped and unconfirmed ratings are not counted in averages.")
             table(public_frame(attention, ["resident", "epa", "question_id", "question", "raw_response", "status"]))
         else:
             st.info("No unmatched response codes or unconfirmed ratings.")
@@ -766,7 +777,7 @@ def review_page(state: dict, store: GitHubStore) -> None:
 
 
 def settings_page(state: dict, store: GitHubStore) -> None:
-    st.header("Settings")
+    st.subheader("Advanced settings")
     current_start = state["settings"].get("academic_year_start_month", 7)
     start = st.selectbox("Academic year starts in", list(range(1, 13)), index=current_start - 1, format_func=lambda m: calendar.month_name[m])
     if st.button("Save academic-year setting"):
@@ -779,7 +790,7 @@ def settings_page(state: dict, store: GitHubStore) -> None:
             st.session_state["notice"] = st.session_state["save_result"]
             st.rerun()
     with st.expander("How averages and saved data work"):
-        st.write("Each question average uses its valid mapped ratings in the selected date range. Overall EPA averages first average selected scored questions within each completed evaluation, then average those evaluation scores with equal weight. An evaluation with no valid scored answers contributes no average. Local levels are display labels, not APPD supervision decisions. Question-level PDF reports remain numeric.")
+        st.write("Each question average uses its valid mapped ratings in the selected date range. Overall EPA averages first average selected scored questions within each completed evaluation, then average those evaluation scores with equal weight. An evaluation with no valid scored answers contributes no average. Question-level and EPA reports are numeric. Only the Data Hub upload uses approved supervision codes.")
         st.write("Responses are preserved as exported. Changing a form's scale recalculates reports without re-uploading. Unexpected codes are flagged instead of treated as numeric scores.")
         st.write("The archive contains forms, evaluations, and review decisions, encrypted before it is saved to GitHub. Reopening the app restores the archive after login.")
         st.write("Exact re-uploads are skipped. Because these exports do not contain a unique evaluation ID, similar records with changed completion dates are held for review.")
@@ -821,7 +832,7 @@ def main() -> None:
     state = st.session_state["archive"]
     with st.sidebar:
         st.title("EPA Tracker")
-        page = st.radio("Navigate", NAVIGATION, label_visibility="collapsed")
+        page = st.radio("Navigate", NAVIGATION, label_visibility="collapsed", key="simple_navigation")
         st.divider()
         st.caption(f"{len(state['evaluations'])} evaluations | {len(state['forms'])} forms")
         if state.get("updated_at"):
@@ -846,17 +857,12 @@ def main() -> None:
         report_view = dashboard(state)
     elif page == "Upload":
         upload_page(state, store)
-    elif page == "Forms":
-        forms_page(state, store)
-    elif page == "Review":
-        review_page(state, store)
     elif page == "APPD Export":
         appd_export_page(state, store, commit)
     elif page == "Admin":
-        appd_admin_page(state, store, commit)
-    else:
-        settings_page(state, store)
-    render_sidebar_pdf(state, report_view)
+        appd_admin_page(state, store, commit, forms_page=forms_page, review_page=review_page, settings_page=settings_page)
+    if page == "Dashboard":
+        render_sidebar_pdf(state, report_view)
 
 
 if __name__ == "__main__":

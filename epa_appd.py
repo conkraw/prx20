@@ -24,7 +24,7 @@ from epa_core import clean_text, match_form, normalize_code, normalize_key, scor
 from epa_pgy import as_date, pgy_number, has_start_date, validated_start_date, pgy_from_start, pgy_label
 
 # Bump when calculation behavior changes so old CCC approvals cannot be reused.
-CALCULATION_VERSION = "evaluation-first-start-date-pgy-v3"
+CALCULATION_VERSION = "numeric-first-evaluation-weight-v4"
 EPA_COLUMNS = [f"EPA {n}" for n in range(1, 13)]
 APPD_CODES = ("0", "1", "2a", "2b", "3a", "3b", "4", "5")
 HEADERS = ["programid", "assessmentdate", "name_or_program_assigned_ID", "pgy", "season", "mapping"] + EPA_COLUMNS
@@ -63,7 +63,6 @@ def defaults(today: date | None = None) -> dict:
         "assessment_date_mode": "latest_completed", "fixed_assessment_date": today.isoformat(),
         "aggregation": "equal_evaluations", "conversion_enabled": False,
         "conversion_confirmed": False, "minimum_score": 1.0, "score_bands": [],
-        "local_fraction_order": "b_then_a", "local_fraction_cutoff": 0.5,
     }
 
 
@@ -97,14 +96,6 @@ def validate_config(config: dict) -> None:
         raise ValueError("Enter the CCC assessment date.")
     if config.get("aggregation") != "equal_evaluations":
         raise ValueError("Use evaluation-first averaging: linked questions within each evaluation, then equal evaluation weights.")
-    if config.get("local_fraction_order", "b_then_a") not in {"b_then_a", "a_then_b"}:
-        raise ValueError("Choose a valid local a/b display order.")
-    try:
-        cutoff = float(config.get("local_fraction_cutoff", 0.5))
-    except (ValueError, TypeError):
-        raise ValueError("The local fractional cutoff must be between 0 and 1.") from None
-    if not math.isfinite(cutoff) or not 0 < cutoff < 1:
-        raise ValueError("The local fractional cutoff must be between 0 and 1.")
     if config.get("conversion_enabled"):
         if not config.get("conversion_confirmed"):
             raise ValueError("Confirm the local score conversion before enabling suggestions.")
@@ -356,11 +347,11 @@ def scoring_diagnostics(state: dict, rows) -> list[dict]:
         statuses = selected["status"].value_counts().to_dict()
         reasons = []
         if not form.get("scoring_confirmed"):
-            reasons.append("Forms: review and save the scoring scale.")
+            reasons.append("Admin > Forms and EPA mapping: review and save the scoring scale.")
         if selected.empty:
-            reasons.append("Forms: select the questions to include in averages.")
+            reasons.append("Admin > Forms and EPA mapping: select questions to include.")
         if statuses.get("unmapped", 0):
-            reasons.append("Forms: map the unrecognized response codes.")
+            reasons.append("Admin > Forms and EPA mapping: map the unrecognized response codes.")
         if not statuses.get("scored", 0) and not reasons:
             reasons.append("No scored responses in this selection. All selected responses are blank or excluded.")
         results.append({"Form": form["name"], "Evaluations": int(group["record_id"].nunique()),
@@ -421,12 +412,13 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
         valid = mapping.get("confirmed") and mapping.get("form_signature") == form_signature(form)
         form_issues = []
         if used and not valid:
-            mapping_issues[fid] = "Admin > Question mapping: save and confirm the links for this form."
+            mapping_issues[fid] = "Admin > Forms and EPA mapping: save and confirm the links for this form."
             form_issues.append(mapping_issues[fid])
         if used and not mapping.get("questions"):
+            coverage_ready = False
             form_issues.append("No questions are linked to EPA 1-12. Link the appropriate questions in Admin.")
         if used and not form.get("scoring_confirmed"):
-            form_issues.append("Forms: review and confirm the numeric scoring scale.")
+            form_issues.append("Admin > Forms and EPA mapping: confirm the numeric scoring scale.")
         if used:
             linked = set(mapping.get("questions", {}))
             excluded = [str(q["id"]) for q in form["questions"] if str(q["id"]) in linked and not q.get("include")]
@@ -442,13 +434,13 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
             excluded_links = [q["id"] for q in form["questions"] if q.get("id") in good_links[fid] and not q.get("include")]
             if used and excluded_links:
                 coverage_ready = False
-                warnings.append(f"{form['name']}: linked questions {', '.join(excluded_links)} are excluded from scoring in Forms.")
+                warnings.append(f"{form['name']}: linked questions {', '.join(excluded_links)} are excluded from scoring in Admin > Forms and EPA mapping.")
         elif used:
             coverage_ready = False
             warnings.append(f"{form['name']}: APPD question mapping is missing, unconfirmed, or needs review after wording changed.")
         if used and not form.get("scoring_confirmed"):
             coverage_ready = False
-            warnings.append(f"{form['name']}: numeric scoring has not been confirmed in Forms.")
+            warnings.append(f"{form['name']}: numeric scoring has not been confirmed in Admin > Forms and EPA mapping.")
     unknown = sum(match_form(r, state.get("forms", {}))["form_id"] is None for r in eligible.values())
     if unknown:
         coverage_ready = False
@@ -499,7 +491,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
     form_summaries = [
         {"Resident": names.get(key, key), "APPD EPA": epa,
          "Form": state["forms"][fid]["name"], "Average": mean(values),
-         "Evaluations": len(values), "Local level": local_display_level(mean(values), config)}
+         "Evaluations": len(values)}
         for (key, epa, fid), values in sorted(form_values.items())
     ]
     rows, summaries = [], []
@@ -535,7 +527,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
                 if blocked[(key, epa)] or pending_maps or None in resident_forms:
                     status = "Calculated from available scores. Some evidence needs review."
             elif blocked[(key, epa)]:
-                status = "Linked questions need scoring review in Forms."
+                status = "Linked questions need scoring review in Admin > Forms and EPA mapping."
             elif pending_maps:
                 status = "Question mapping is missing, unconfirmed, or changed. Review Admin."
             elif not linked_here:
@@ -544,7 +536,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
                 status = "Linked responses are blank or excluded. No scored evidence."
             summaries.append({"resident_key": key, "Resident": row["Resident"], "APPD EPA": epa,
                               "Assessment date": row["assessmentdate"], "PGY": pgy_label(pgy),
-                              "Average": avg, "Local level": local_display_level(avg, config),
+                              "Average": avg,
                               "Calculation status": status, "Ratings": len(values), "Evaluations": len(evaluations),
                               "Needs scoring review": blocked[(key, epa)], "Suggested level": row[epa]})
         rows.append(row)

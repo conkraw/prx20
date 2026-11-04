@@ -24,7 +24,7 @@ def apply_form_removal_session_cleanup() -> None:
         st.session_state["_epa_report_filters"] = preferences
     # Run on the next rerun, not while these widgets are being instantiated.
     exact = {"upload_preview", "dashboard_epas", "dashboard_residents", "form_to_edit", "appd_mapping_form"}
-    prefixes = ("appd_work_", "appd_final_", f"appd_map_v2_{removed_id}_",
+    prefixes = ("appd_work_", "appd_final_", "numeric_work_", "numeric_editor_", f"appd_map_v2_{removed_id}_",
                 f"form_{removed_id}_", "remove_form_")
     for key in list(st.session_state.keys()):
         if key in exact or str(key).startswith(prefixes):
@@ -57,13 +57,13 @@ def render_form_removal(state: dict, store, commit: Callable, form_id: str) -> N
         if preview["ambiguous_evaluation_ids"]:
             st.error(
                 f"Removal is blocked: {len(preview['ambiguous_evaluation_ids'])} evaluations "
-                "could belong to this form or another form. Check Review > Unrecognized forms "
+                "could belong to this form or another form. Check Admin > Data review > Unrecognized forms "
                 "and upload the correct form definitions before removing this form."
             )
         if preview["blocked_conflict_ids"]:
             st.error(
                 f"Removal is blocked: {len(preview['blocked_conflict_ids'])} pending decisions "
-                "also involve another or an unrecognized form. Resolve them under Review first."
+                "also involve another or an unrecognized form. Resolve them under Admin > Data review first."
             )
         acknowledged = st.checkbox(
             "I understand that this form and its linked evaluations will be removed",
