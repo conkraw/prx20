@@ -22,11 +22,13 @@ from typing import Any
 
 import pandas as pd
 
+from epa_question_text import is_placeholder_question_text, merge_question_metadata, merge_response_wording
+
 
 SCHEMA_VERSION = 1
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 QUESTION_PATTERN = re.compile(
-    r"^\[?\s*question\s+(\d+)\s+(id|tags|response|comment|drop\s*down\s*list)\s*\]?$",
+    r"^\[?\s*question\s+(\d+)\s+(id|tags|response|comment|drop\s*down\s*list|text|question\s*text|wording|prompt|part\s*\d+)\s*\]?$",
     re.IGNORECASE,
 )
 SCORE_COLUMNS = [
@@ -341,6 +343,18 @@ def _parse_evaluations(headers: list[str], rows: list[dict], filename: str) -> t
                 "dropdown": clean_text(row.get(parts.get("dropdownlist", ""), "")),
                 "tags": clean_text(row.get(parts.get("tags", ""), "")),
             }
+            # Keep explicit prompt columns when an evaluation export supplies them.
+            # Do not infer a prompt from responses, comments, tags, or dropdown labels.
+            text_parts = sorted((key for key in parts if re.fullmatch(r"part\d+", key)),
+                                key=lambda key: int(key[4:]))
+            prompt = "\n".join(clean_text(row.get(parts[key], "")) for key in text_parts
+                                 if clean_text(row.get(parts[key], "")))
+            if not prompt:
+                prompt = next((clean_text(row.get(parts[key], ""))
+                               for key in ("text", "questiontext", "wording", "prompt")
+                               if key in parts and clean_text(row.get(parts[key], ""))), "")
+            if prompt:
+                fields["question_text"] = prompt
             if not question_id:
                 if any(fields.values()):
                     raise ParseError(
@@ -428,27 +442,32 @@ def match_form(record: dict, forms: dict) -> dict:
 
 
 def register_form(state: dict, form: dict, name: str | None = None) -> dict:
+    """Register a definition without replacing real text with ID-only labels."""
     new_state = copy.deepcopy(state)
     incoming = copy.deepcopy(form)
-    incoming["id"] = form_id_for_questions([q["id"] for q in incoming["questions"]])
-    if not incoming["questions"]:
-        raise ValueError("A form needs at least one question.")
+    for question in incoming.get("questions", []):
+        question["id"] = normalize_question_id(question.get("id"))
+    if not incoming.get("questions") or any(not q["id"] for q in incoming["questions"]):
+        raise ValueError("A form needs at least one question and nonblank question IDs.")
     if len({q["id"] for q in incoming["questions"]}) != len(incoming["questions"]):
         raise ValueError("A form cannot repeat question IDs.")
+    incoming["id"] = form_id_for_questions([q["id"] for q in incoming["questions"]])
     previous = new_state["forms"].get(incoming["id"])
     if previous:
-        old_questions = {q["id"]: q for q in previous["questions"]}
+        old_questions = {normalize_question_id(q["id"]): q for q in previous["questions"]}
+        # Merge before comparing wording. Blank imports must neither erase text
+        # nor unnecessarily turn confirmed scores/mappings off.
+        incoming["questions"] = [merge_question_metadata(old_questions.get(q["id"], {}), q)
+                                 for q in incoming["questions"]]
         wording_changed = any(
             normalize_key(question.get(field, ""))
             != normalize_key(old_questions.get(question["id"], {}).get(field, ""))
             for question in incoming["questions"] for field in ("text", "tags")
         )
-        for question in incoming["questions"]:
-            if question["id"] in old_questions:
-                for field in ("include", "score_map"):
-                    if field in old_questions[question["id"]]:
-                        question[field] = copy.deepcopy(old_questions[question["id"]][field])
-        incoming["name"] = name if name is not None else previous["name"]
+        merged = copy.deepcopy(previous)
+        merged.update(incoming)
+        incoming = merged
+        incoming["name"] = clean_text(name) if name is not None else previous["name"]
         incoming["score_map"] = copy.deepcopy(previous["score_map"])
         incoming["scoring_confirmed"] = previous.get("scoring_confirmed", False) and not wording_changed
     elif name is not None:
@@ -504,6 +523,9 @@ def ingest_evaluations(state: dict, records: list[dict]) -> tuple[dict, dict]:
                 for field in ("resident_pgy", "pgy_raw", "pgy_source_field"):
                     if field in incoming:
                         previous[field] = copy.deepcopy(incoming[field])
+            for qid, answer in incoming.get("responses", {}).items():
+                if qid in previous.get("responses", {}):
+                    previous["responses"][qid] = merge_response_wording(previous["responses"][qid], answer, qid)
             stats["duplicates"] += 1
             continue
         conflict_id = "conflict_" + _digest([identity, old_hash, incoming["content_hash"]])

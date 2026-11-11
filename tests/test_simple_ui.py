@@ -137,6 +137,7 @@ def test_unified_form_save_keeps_multiple_epa_links_and_source_scores():
     namespace = {"st": fake, "pd": pd, "copy": copy, "GitHubStore": object,
                  "commit": commit, "fingerprint": appd.digest, "appd_tools": appd,
                  "render_form_removal": lambda *args: None,
+                 "render_question_text_repair": lambda *args: None,
                  "observed_codes": lambda *args: {"1", "2", "3", "4", "5", "6"},
                  "scale_editor": lambda mapping, *args: copy.deepcopy(mapping),
                  "read_scale": lambda mapping: mapping}

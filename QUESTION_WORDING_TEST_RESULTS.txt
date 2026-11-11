@@ -1,0 +1,12 @@
+.................................................................s...... [ 21%]
+........................................................................ [ 43%]
+........................................................................ [ 65%]
+........................................................................ [ 87%]
+........................................                         [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_all_residents_pdf.py:4: Streamlit runtime is not installed in this test environment
+SKIPPED [1] tests/test_auth.py:4: Streamlit runtime is not installed in this test environment
+SKIPPED [1] tests/test_pdf_ui.py:4: Streamlit runtime is not installed in this test environment
+SKIPPED [1] tests/test_ui.py:4: Streamlit runtime is not installed in this test environment
+SKIPPED [1] tests/test_core.py:321: Supplied resident exports are intentionally excluded from the app package.
+327 passed, 5 skipped, 8 subtests passed in 2.47s
