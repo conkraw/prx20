@@ -1,5 +1,8 @@
 """Main Streamlit flows using a memory store and invented evaluation data."""
 
+import pytest
+pytest.importorskip("streamlit", reason="Streamlit runtime is not installed in this test environment")
+
 import copy
 import io
 from pathlib import Path
@@ -118,16 +121,17 @@ def test_main_gate_does_not_load_resident_archive_before_correct_password(passwo
         _button(app, "Sign in").click().run()
         assert not app.exception
         assert MemoryStore.loads == 1
-        assert len(app.dataframe) >= 2
+        assert len(app.dataframe) >= 1
 
 
 def test_all_main_pages_render_and_excel_prepares(password_hash):
     with patch("epa_storage.GitHubStore", MemoryStore):
         app = _app(password_hash, _example_state())
         _sign_in(app)
-        for page in ["Forms", "Review", "Settings", "Upload", "Dashboard"]:
+        for page in ["Admin", "APPD Export", "Upload", "Dashboard"]:
             app.sidebar.radio[0].set_value(page).run()
             assert not app.exception, page
+        app.selectbox(key="dashboard_report_type").set_value("Download reports").run()
         _button(app, "Prepare Excel report").click().run()
         assert not app.exception
         assert not app.error
@@ -138,11 +142,12 @@ def test_form_confirmation_is_persisted_and_reloaded(password_hash):
     with patch("epa_storage.GitHubStore", MemoryStore):
         app = _app(password_hash, _example_state(confirmed=False))
         _sign_in(app)
-        app.sidebar.radio[0].set_value("Forms").run()
+        app.sidebar.radio[0].set_value("Admin").run()
+        app.selectbox(key="simple_admin_section").set_value("Forms and EPA mapping").run()
         confirmation = next(box for box in app.checkbox if box.label.startswith("I checked"))
         assert confirmation.value is False
         confirmation.check().run()
-        _button(app, "Save form and scoring").click().run()
+        _button(app, "Save form setup").click().run()
         assert not app.exception
         assert not app.error
         assert MemoryStore.writes == 1
@@ -161,7 +166,8 @@ def test_review_replacement_changes_one_saved_evaluation(password_hash):
     with patch("epa_storage.GitHubStore", MemoryStore):
         app = _app(password_hash, state)
         _sign_in(app)
-        app.sidebar.radio[0].set_value("Review").run()
+        app.sidebar.radio[0].set_value("Admin").run()
+        app.selectbox(key="simple_admin_section").set_value("Data review").run()
         assert not app.exception
         decision = next(radio for radio in app.radio if radio.label == "Decision")
         decision.set_value(next(option for option in decision.options if option.startswith("Replace"))).run()
@@ -178,7 +184,8 @@ def test_academic_year_setting_persists_without_changing_evaluations(password_ha
         state = _example_state()
         app = _app(password_hash, state)
         _sign_in(app)
-        app.sidebar.radio[0].set_value("Settings").run()
+        app.sidebar.radio[0].set_value("Admin").run()
+        app.selectbox(key="simple_admin_section").set_value("Advanced").run()
         month = next(box for box in app.selectbox if box.label == "Academic year starts in")
         month.set_value(1).run()
         _button(app, "Save academic-year setting").click().run()
@@ -199,12 +206,12 @@ def test_duplicate_new_form_upload_and_blank_name_are_reviewable(password_hash):
         app.sidebar.radio[0].set_value("Upload").run()
         _button(app, "Review uploads").click().run()
         assert not app.exception
-        names = [box for box in app.text_input if box.label.startswith("EPA name for")]
+        names = [box for box in app.text_input if box.label.startswith("Form name for")]
         assert len(names) == 1
         names[0].set_value("").run()
         assert not app.exception
         assert _button(app, "Save valid files to GitHub").disabled
-        next(box for box in app.text_input if box.label.startswith("EPA name for")).set_value("New example EPA").run()
+        next(box for box in app.text_input if box.label.startswith("Form name for")).set_value("New example EPA").run()
         _button(app, "Save valid files to GitHub").click().run()
         assert not app.exception
         assert not app.error
@@ -225,6 +232,7 @@ def test_chart_keeps_identically_named_form_versions_separate(password_hash):
         app = _app(password_hash, state)
         _sign_in(app)
         assert not app.exception
+        app.selectbox(key="dashboard_report_type").set_value("Monthly progress").run()
         assert chart.call_count >= 1
         assert chart.call_args.args[0].data["Series"].nunique() == 2
 
@@ -243,7 +251,8 @@ def test_multiple_duplicate_candidates_require_selected_replacement_target(passw
     with patch("epa_storage.GitHubStore", MemoryStore):
         app = _app(password_hash, state)
         _sign_in(app)
-        app.sidebar.radio[0].set_value("Review").run()
+        app.sidebar.radio[0].set_value("Admin").run()
+        app.selectbox(key="simple_admin_section").set_value("Data review").run()
         assert not app.exception
         decision = next(radio for radio in app.radio if radio.label == "Decision")
         assert not any(option.startswith("Replace") for option in decision.options)

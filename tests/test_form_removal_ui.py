@@ -210,4 +210,4 @@ def test_main_app_wires_removal_to_forms_page_and_cleanup_before_rendering():
                               if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
     assert "render_form_removal" in dict(names(functions["forms_page"]))
     main_calls = dict(names(functions["main"]))
-    assert main_calls["apply_form_removal_session_cleanup"] < main_calls["forms_page"]
+    assert main_calls["apply_form_removal_session_cleanup"] < main_calls["appd_admin_page"]

@@ -1,5 +1,8 @@
 """Bulk sidebar export broadens only the resident filter."""
 
+import pytest
+pytest.importorskip("streamlit", reason="Streamlit runtime is not installed in this test environment")
+
 import copy
 from unittest.mock import patch
 
@@ -81,7 +84,8 @@ def test_bulk_export_bypasses_only_residents_and_preserves_individual_selection(
         assert app.multiselect(key="dashboard_residents").value == ["example, resident"]
         assert MemoryStore.writes == 0
 
-        app.sidebar.radio[0].set_value("Review").run()
+        app.sidebar.radio[0].set_value("Admin").run()
+        app.selectbox(key="simple_admin_section").set_value("Data review").run()
         assert not app.exception
         _data(download, BULK)()
         sections, _, _ = _sections(builder)

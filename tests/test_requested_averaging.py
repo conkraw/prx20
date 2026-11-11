@@ -47,10 +47,9 @@ def test_display_order_and_cutoff_are_saved_program_choices():
 
 
 @pytest.mark.parametrize("cutoff", [0, 1, -1, float("nan"), float("inf"), "bad"])
-def test_invalid_fraction_cutoff_rejected(cutoff):
+def test_obsolete_local_fraction_cutoff_no_longer_blocks_numeric_reports(cutoff):
     cfg = dict(appd.defaults(), local_fraction_cutoff=cutoff)
-    with pytest.raises(ValueError, match="fractional cutoff"):
-        appd.validate_config(cfg)
+    appd.validate_config(cfg)
 
 
 def test_multiple_epas_are_independent_and_evaluations_are_equal_weight():
@@ -80,7 +79,7 @@ def test_empty_evaluation_is_not_zero_or_an_extra_denominator():
     draft = appd.build_draft(state)
     assert metric(draft, "EPA 2")["Average"] == 3
     assert metric(draft, "EPA 2")["Evaluations"] == 1
-    assert metric(draft, "EPA 2")["Local level"] == "3"
+    assert "Local level" not in metric(draft, "EPA 2")
     summary = core.epa_summary(core.score_rows(state)).iloc[0]
     assert summary["n_evaluations"] == 2
     assert summary["n_scored_evaluations"] == 1
@@ -101,7 +100,7 @@ def test_each_distinct_evaluation_counts_even_for_same_preceptor():
     assert metric(appd.build_draft(state), "EPA 2")["Evaluations"] == 2
 
 
-def test_labels_applied_only_after_averaging():
+def test_numeric_average_is_not_replaced_by_a_local_label():
     state = make_state()
     record = next(iter(state["evaluations"].values()))
     record["responses"]["101"]["response"] = "3"
@@ -109,7 +108,7 @@ def test_labels_applied_only_after_averaging():
     state = add_evaluation(state, answers=("3", "3"))
     row = metric(appd.build_draft(state), "EPA 2")
     assert row["Average"] == 3.25
-    assert row["Local level"] == "3b"
+    assert "Local level" not in row
     assert row["Suggested level"] == ""  # not automatically sent to APPD
 
 
@@ -148,7 +147,7 @@ def test_monthly_and_cumulative_use_individual_evaluations():
 def test_whole_number_local_labels_cannot_be_exported_as_appd_categories():
     state = make_state()
     draft = appd.build_draft(state)
-    assert metric(draft, "EPA 2")["Local level"] == "3"
+    assert "Local level" not in metric(draft, "EPA 2")
     assert draft["rows"][0]["EPA 2"] == ""
     rows = copy.deepcopy(draft["rows"])
     rows[0].update({epa: "0" for epa in appd.EPA_COLUMNS})
@@ -164,7 +163,7 @@ def test_program_appd_thresholds_are_preserved_and_independent_of_local_labels()
     before = copy.deepcopy(state)
     row = metric(appd.build_draft(state), "EPA 2")
     assert row["Average"] == 3
-    assert row["Local level"] == "3"
+    assert "Local level" not in row
     assert row["Suggested level"] == "3a"
     assert state == before
 
@@ -172,8 +171,8 @@ def test_program_appd_thresholds_are_preserved_and_independent_of_local_labels()
 def test_legacy_mapping_and_settings_read_without_mutating_the_archive():
     state = make_state()
     fid = next(iter(state["forms"]))
-    state["settings"]["appd"].pop("local_fraction_order")
-    state["settings"]["appd"].pop("local_fraction_cutoff")
+    state["settings"]["appd"].pop("local_fraction_order", None)
+    state["settings"]["appd"].pop("local_fraction_cutoff", None)
     state["settings"]["appd"]["aggregation"] = "pooled_ratings"
     state["settings"]["appd_question_maps"][fid]["questions"]["101"] = "EPA 2"
     state["settings"]["appd_question_maps"][fid]["questions"]["102"] = ["EPA 2", "EPA 2"]
@@ -181,7 +180,7 @@ def test_legacy_mapping_and_settings_read_without_mutating_the_archive():
     draft = appd.build_draft(state)
     assert metric(draft, "EPA 2")["Average"] == 3
     assert metric(draft, "EPA 2")["Ratings"] == 2
-    assert metric(draft, "EPA 2")["Local level"] == "3"
+    assert "Local level" not in metric(draft, "EPA 2")
     assert draft["config"]["aggregation"] == "equal_evaluations"
     assert state == before
 

@@ -1,5 +1,8 @@
 """Sidebar PDF filters and deferred-export snapshots, using only fake data."""
 
+import pytest
+pytest.importorskip("streamlit", reason="Streamlit runtime is not installed in this test environment")
+
 import copy
 from unittest.mock import patch
 
@@ -138,12 +141,13 @@ def test_saved_scoring_change_refreshes_pdf_without_mutating_old_snapshot(pdf_pa
         app.multiselect(key="dashboard_residents").set_value(["example, resident"]).run()
         app.multiselect(key="dashboard_epas").set_value([first_form]).run()
         original_callback = _callback(download)
-        app.sidebar.radio[0].set_value("Forms").run()
+        app.sidebar.radio[0].set_value("Admin").run()
+        app.selectbox(key="simple_admin_section").set_value("Forms and EPA mapping").run()
         form_selector = next(box for box in app.selectbox if box.label == "Form")
         form_selector.set_value(first_form).run()
         confirmation = next(box for box in app.checkbox if box.label.startswith("I checked"))
         confirmation.uncheck().run()
-        _button(app, "Save form and scoring").click().run()
+        _button(app, "Save form setup").click().run()
         assert not app.exception
         assert not app.error
         assert not MemoryStore.saved["forms"][first_form]["scoring_confirmed"]

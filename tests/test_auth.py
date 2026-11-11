@@ -1,5 +1,8 @@
 """Password verification and cross-session throttling tests."""
 
+import pytest
+pytest.importorskip("streamlit", reason="Streamlit runtime is not installed in this test environment")
+
 import unittest
 import time
 

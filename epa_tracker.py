@@ -30,6 +30,7 @@ from epa_appd import config_for as appd_config_for
 import epa_appd as appd_tools
 from epa_appd_ui import calculated_overview
 from epa_form_ui import apply_form_removal_session_cleanup, render_form_removal
+from epa_form_discovery import unregistered_groups, register_candidate
 
 
 ROOT = Path(__file__).resolve().parent
@@ -599,8 +600,31 @@ def read_scale(frame: pd.DataFrame) -> dict:
 def forms_page(state: dict, store: GitHubStore) -> None:
     st.subheader("Forms and EPA mapping")
     st.caption("The app identifies forms by their question IDs. Review the scoring once for each new form.")
+    groups = unregistered_groups(state) if "unregistered_groups" in globals() else []
+    if groups:
+        with st.expander(f"Register an unrecognized form ({len(groups)} question sets)", expanded=True):
+            st.info("Evaluations are saved, but these question sets have no registered form. Register one here, then map its questions below. For full question wording, upload the matching form-definition TAB file instead.")
+            options = list(range(len(groups)))
+            selected = st.selectbox("Unrecognized question set", options,
+                                    format_func=lambda i: f"{groups[i]['count']} evaluations | {', '.join(groups[i]['rotations'][:3])} | {len(groups[i]['ids'])} questions",
+                                    key="unrecognized_group")
+            group = groups[selected]
+            st.caption(f"{group['residents']} residents. Question IDs: {', '.join(group['ids'])}")
+            name = st.text_input("Name this form", value=group['rotations'][0] if len(group['rotations']) == 1 else "New EPA form", key=f"candidate_name_{group['form_id']}")
+            confirm = st.checkbox("I confirm these question IDs belong to the same form", key=f"candidate_confirm_{group['form_id']}")
+            if st.button("Register form for mapping", disabled=not confirm or not name.strip(), type="primary"):
+                try:
+                    def apply(current):
+                        updated = register_candidate(current, group, name)
+                        return updated, "Form registered. Select it below and complete its question mapping and scoring."
+                    if commit(store, apply):
+                        st.session_state["notice"] = st.session_state["save_result"]
+                        st.session_state.pop("form_to_edit", None)
+                        st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
     if not state["forms"]:
-        st.info("Upload a form definition first.")
+        st.info("Upload a form definition or register an unrecognized form above.")
         return
     form_id = st.selectbox("Form", sorted(state["forms"], key=lambda k: state["forms"][k]["name"]),
                            format_func=lambda k: state["forms"][k]["name"], key="form_to_edit")
