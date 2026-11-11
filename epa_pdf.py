@@ -145,6 +145,9 @@ def build_question_pdf(rows: pd.DataFrame, forms: dict, context: dict) -> bytes:
     page numbers repeat when a form needs more than one page. Long question
     paragraphs can split across pages instead of being clipped or discarded.
     """
+    if context.get("group_by_mapped_epa"):
+        from epa_grouped_pdf import build_grouped_question_pdf
+        return build_grouped_question_pdf(rows, forms, context)
     sections = pdf_question_sections(rows, forms)
     if not sections:
         raise ValueError("No recognized evaluations match the selected report filters.")

@@ -25,6 +25,7 @@ from epa_core import (
 )
 from epa_storage import GitHubStore, StorageError
 from epa_pdf import build_question_pdf
+from epa_grouped_pdf import grouped_context, report_snapshot
 from epa_simple_ui import admin_page as appd_admin_page, export_page as appd_export_page
 from epa_appd import config_for as appd_config_for
 import epa_appd as appd_tools
@@ -198,6 +199,8 @@ def report_context(state: dict, year: int, start_month: int, months: list[int], 
         "date_basis_label": "Session month" if basis == "session_date" else "Completion month",
         "generated_at": utc_now(),
         "warnings": warnings,
+        "report_selection": {"academic_year": year, "start_month": start_month,
+                             "months": list(months), "date_basis": basis},
     }
 
 
@@ -232,9 +235,12 @@ def pdf_download_button(state: dict, rows: pd.DataFrame, context: dict, *, label
     forms_snapshot = copy.deepcopy({key: value for key, value in state["forms"].items()
                                     if key in used_forms})
     context_snapshot = copy.deepcopy(context)
+    context_snapshot["selected_form_ids"] = list(st.session_state.get(REPORT_FILTERS_KEY, {}).get("form_ids") or [])
+    archive_snapshot = report_snapshot(state)
 
     def make_pdf() -> bytes:
-        return build_question_pdf(rows_snapshot, forms_snapshot, context_snapshot)
+        grouped = grouped_context(archive_snapshot, rows_snapshot, context_snapshot)
+        return build_question_pdf(rows_snapshot, forms_snapshot, grouped)
 
     st.download_button(label, data=make_pdf, file_name=filename, mime="application/pdf",
                        on_click="ignore", width="stretch", key=key, help=help_text)
@@ -251,14 +257,14 @@ def render_sidebar_pdf(state: dict, view: tuple[pd.DataFrame, dict] | None = Non
         pdf_download_button(
             state, rows, context, label="Download PDF", key="epa_pdf_download",
             filename=f"epa_question_averages_{context['academic_year_label']}.pdf",
-            help_text="Every question is listed by EPA form and resident. Unselected or unscored averages stay blank.",
+            help_text="Original question tables grouped by EPA 1-12, with source forms, original numbering, averages, and counts. Unassigned questions and a form checklist appear at the end.",
         )
         st.caption("Uses your Dashboard resident, EPA, and date selections.")
         pdf_download_button(
             state, all_rows, all_context, label="Download PDF for all residents",
             key="epa_pdf_all_residents_download",
             filename=f"epa_all_residents_{all_context['academic_year_label']}.pdf",
-            help_text="One combined PDF for every resident with evaluations in the selected academic year, months, and EPA forms. Your resident selection stays unchanged.",
+            help_text="One combined PDF for every resident, grouped by EPA with the original form question tables. Uses the selected dates and forms. Your resident selection stays unchanged.",
         )
         if all_rows.empty:
             st.caption("Choose a Dashboard period with saved evaluations.")
