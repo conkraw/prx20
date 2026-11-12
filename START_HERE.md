@@ -1,3 +1,7 @@
+# Faster interface update
+
+Start with FASTER_INTERFACE_README.txt for this release. The app now shows Interface v2026.11 in the sidebar.
+
 # Start here
 
 Already using EPA Tracker? Follow SIMPLE_WORKFLOW_README.md. Replace or add the six listed Python files together, then reboot the app. Keep your existing archive, Secrets, encryption key, template, and requirements.

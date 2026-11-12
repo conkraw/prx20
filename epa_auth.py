@@ -150,25 +150,37 @@ def require_login(app_config: Mapping[str, Any]) -> None:
         logout()
         st.info("Your session ended. Sign in again to continue.")
 
-    st.title("EPA Tracker")
-    st.write("Sign in to view and manage resident evaluations.")
-    remaining = _THROTTLE.remaining(fingerprint, now)
-    if remaining:
-        st.warning(f"Too many sign-in attempts. Try again in {remaining} seconds.")
-    with st.form("epa_login_form", clear_on_submit=True):
-        password = st.text_input("Password", type="password", key="_epa_password_entry", max_chars=1024)
-        submitted = st.form_submit_button("Sign in", disabled=bool(remaining))
-    if submitted:
-        blocked = _THROTTLE.reserve(fingerprint, time.monotonic())
-        if blocked:
-            st.error(f"Too many sign-in attempts. Try again in {blocked} seconds.")
-        elif verify_password(password, encoded):
-            _THROTTLE.success(fingerprint)
-            st.session_state[_AUTH_KEY] = {
-                "fingerprint": fingerprint,
-                "last_activity": time.monotonic(),
-            }
-            st.rerun()
-        else:
-            st.error("The password was not accepted.")
+    gate = st.empty()
+    with gate.container():
+        _, center, _ = st.columns([1, 1.5, 1])
+        with center:
+            st.markdown('<div class="epa-login"><div class="epa-kicker">RESIDENCY EDUCATION</div>'
+                        '<h1>EPA Tracker</h1><p>Your resident assessment workspace.</p></div>',
+                        unsafe_allow_html=True)
+            remaining = _THROTTLE.remaining(fingerprint, now)
+            if remaining:
+                st.warning(f"Too many sign-in attempts. Try again in {remaining} seconds.")
+            with st.form("epa_login_form", clear_on_submit=True):
+                password = st.text_input("Password", type="password", key="_epa_password_entry", max_chars=1024)
+                submitted = st.form_submit_button("Sign in", type="primary", disabled=bool(remaining), width="stretch")
+            st.caption("Your evaluations are loaded only after you sign in.")
+            if submitted:
+                blocked = _THROTTLE.reserve(fingerprint, time.monotonic())
+                if blocked:
+                    st.error(f"Too many sign-in attempts. Try again in {blocked} seconds.")
+                else:
+                    with st.spinner("Checking password..."):
+                        accepted = verify_password(password, encoded)
+                    if accepted:
+                        _THROTTLE.success(fingerprint)
+                        st.session_state[_AUTH_KEY] = {
+                            "fingerprint": fingerprint,
+                            "last_activity": time.monotonic(),
+                        }
+                        # Delete the submitted secret and the login UI before
+                        # the archive request starts. Do not keep a faded form.
+                        st.session_state.pop("_epa_password_entry", None)
+                        gate.empty()
+                        return
+                    st.error("The password was not accepted.")
     st.stop()

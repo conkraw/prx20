@@ -61,6 +61,7 @@ class UI:
                     result.at[row, column] = value
         return result
     def button(self, label, **kwargs): return label == self.clicked and not kwargs.get("disabled", False)
+    def form_submit_button(self, label, **kwargs): return self.button(label, **kwargs)
     def checkbox(self, label, **kwargs): return self.selections.get(label, kwargs.get("value", False))
     def date_input(self, label, value, **kwargs): return self.selections.get(label, value)
     def number_input(self, label, value, **kwargs): return self.selections.get(label, value)

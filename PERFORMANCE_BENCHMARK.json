@@ -1,0 +1,25 @@
+{
+  "data": "Fictional benchmark, no uploaded resident records",
+  "evaluations": 120,
+  "residents": 12,
+  "forms": 4,
+  "questions_per_form": 8,
+  "view": "Dashboard: Mapped EPA 1-12, all 12 months",
+  "before_seconds": [
+    2.4125782160001563,
+    2.6571304060000784,
+    2.5456818189998103
+  ],
+  "before_median_seconds": 2.5456818189998103,
+  "after_first_calculation_seconds": 0.10257208200005152,
+  "after_repeat_seconds": [
+    0.05072967199998857,
+    0.04605090200016093,
+    0.05025644700003795
+  ],
+  "after_repeat_median_seconds": 0.05025644700003795,
+  "cache_estimated_bytes": 2259884,
+  "identical_scored_rows_and_full_mapped_draft": true,
+  "identical_additional_edge_case_drafts": 5,
+  "scope": "Local Python dashboard logic with simulated UI. Excludes hosting startup, browser rendering, GitHub/network and authentication."
+}

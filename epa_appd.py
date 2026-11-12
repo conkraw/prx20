@@ -13,8 +13,9 @@ import json
 import math
 import re
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -379,7 +380,7 @@ def review_key(config: dict) -> str:
     return digest([config["programid"], config["mapping"], config["season"], config["year"]])[:24]
 
 
-def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> dict:
+def build_draft(state: dict, config: dict | None = None, *, record_ids=None, scored_rows=None) -> dict:
     config = copy.deepcopy(config or config_for(state))
     validate_config(config)
     start, end = as_date(config["start_date"]), as_date(config["end_date"])
@@ -393,6 +394,21 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
             missing_dates += 1
         elif start <= day <= end:
             eligible[rid] = record
+    # A form is determined only by its question IDs. Many evaluations share
+    # the same set, so recognize each distinct set once per calculation.
+    signature_matches = {}
+    matches = {}
+    for rid, record in eligible.items():
+        question_ids = frozenset(record.get("responses", {}))
+        if question_ids not in signature_matches:
+            signature_matches[question_ids] = match_form(record, state.get("forms", {}))
+        matches[rid] = signature_matches[question_ids]
+    form_counts = Counter(item.get("form_id") for item in matches.values())
+
+    @lru_cache(maxsize=None)
+    def pgy_at(resident_key, day):
+        return resolve_pgy(state, resident_key, day)
+
     people = defaultdict(list)
     for rid, record in eligible.items():
         people[record["resident_key"]].append((rid, record))
@@ -408,7 +424,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
     coverage_ready = True
     for fid, form in state.get("forms", {}).items():
         mapping = mapping_for(state, fid)
-        used = any(match_form(record, state["forms"]).get("form_id") == fid for record in eligible.values())
+        used = form_counts[fid] > 0
         valid = mapping.get("confirmed") and mapping.get("form_signature") == form_signature(form)
         form_issues = []
         if used and not valid:
@@ -425,7 +441,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
             if excluded:
                 form_issues.append("Mapped questions excluded in Forms: " + ", ".join(excluded))
             form_notices.append({"Form": form["name"],
-                                 "Evaluations": sum(match_form(r, state["forms"]).get("form_id") == fid for r in eligible.values()),
+                                 "Evaluations": form_counts[fid],
                                  "Linked questions": len(linked),
                                  "Mapping ready": bool(valid), "Scoring ready": bool(form.get("scoring_confirmed")),
                                  "Action": " ".join(form_issues) or "Ready. Only valid scored responses contribute."})
@@ -441,13 +457,13 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
         if used and not form.get("scoring_confirmed"):
             coverage_ready = False
             warnings.append(f"{form['name']}: numeric scoring has not been confirmed in Admin > Forms and EPA mapping.")
-    unknown = sum(match_form(r, state.get("forms", {}))["form_id"] is None for r in eligible.values())
+    unknown = form_counts[None]
     if unknown:
         coverage_ready = False
         warnings.append(f"{unknown} included evaluations have unrecognized forms and contribute no mapped scores.")
 
     evidence, per_eval, blocked, question_points = [], defaultdict(list), defaultdict(int), defaultdict(list)
-    for item in score_rows(state).to_dict("records"):
+    for item in (score_rows(state) if scored_rows is None else scored_rows).to_dict("records"):
         if item["record_id"] not in eligible:
             continue
         for epa in good_links.get(item["form_id"], {}).get(item["question_id"], []):
@@ -466,7 +482,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
                 "Original response": item["raw_response"], "Numeric score": float(score) if valid else None,
                 "Status": item["status"], "Session date": item.get("session_date"),
                 "Date completed": item.get("completed_at"),
-                "PGY at assessment": pgy_label(resolve_pgy(state, item["resident_key"], as_date(item.get("completed_at")))[0]),
+                "PGY at assessment": pgy_label(pgy_at(item["resident_key"], as_date(item.get("completed_at")))[0]),
                 "Evaluation ID": item["record_id"],
             })
     group_values, eval_means = defaultdict(list), defaultdict(list)
@@ -476,7 +492,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
         group_values[(key, epa)].extend(values)
         eval_means[(key, epa)].append(evaluation_average)
         record = eligible[rid]
-        fid = match_form(record, state.get("forms", {}))["form_id"]
+        fid = matches[rid]["form_id"]
         form_values[(key, epa, fid)].append(evaluation_average)
         mapped_count = sum(epa in targets for targets in good_links.get(fid, {}).values())
         evaluation_scores.append({
@@ -485,7 +501,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
             "Evaluation average": evaluation_average,
             "Scored questions": len(values), "Mapped questions": mapped_count,
             "Session date": record.get("session_date"), "Date completed": record.get("completed_at"),
-            "PGY at assessment": pgy_label(resolve_pgy(state, key, as_date(record.get("completed_at")))[0]),
+            "PGY at assessment": pgy_label(pgy_at(key, as_date(record.get("completed_at")))[0]),
             "Evaluation ID": rid,
         })
     form_summaries = [
@@ -504,7 +520,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
             field = "completed_at" if mode == "latest_completed" else "session_date"
             days = [as_date(r.get(field)) for r in records]
             day = max((d for d in days if d is not None), default=None)
-        pgy, source = resolve_pgy(state, key, day)
+        pgy, source = pgy_at(key, day)
         roster = state.get("settings", {}).get("appd_roster", {}).get(key, {})
         row = {"resident_key": key, "Resident": names.get(key, key), "Include": True,
                "name_or_program_assigned_ID": roster.get("export_id") or names.get(key, key),
@@ -514,7 +530,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
             warnings.append(f"{names.get(key, key)}: latest assessment date is outside the reporting year. Review the date or select a CCC date.")
         if pgy is None:
             warnings.append(f"{row['Resident']}: {source}")
-        resident_forms = {match_form(r, state.get("forms", {})).get("form_id") for r in records}
+        resident_forms = {matches[rid].get("form_id") for rid, _ in people[key]}
         pending_maps = any(fid in mapping_issues for fid in resident_forms if fid is not None)
         for epa in EPA_COLUMNS:
             values, evaluations = group_values[(key, epa)], eval_means[(key, epa)]
@@ -552,7 +568,7 @@ def build_draft(state: dict, config: dict | None = None, *, record_ids=None) -> 
             "config": config, "coverage_ready": coverage_ready and not any(blocked.values())}
 
 
-def dashboard_mapped_draft(state: dict, rows, date_basis: str = "session_date") -> dict:
+def dashboard_mapped_draft(state: dict, rows, date_basis: str = "session_date", *, scored_rows=None) -> dict:
     """Use exactly the dashboard's selected evaluations, not APPD export filters."""
     ids = set(rows["record_id"]) if not rows.empty else set()
     days = [as_date(r.get(date_basis)) for rid, r in state.get("evaluations", {}).items() if rid in ids]
@@ -563,7 +579,7 @@ def dashboard_mapped_draft(state: dict, rows, date_basis: str = "session_date") 
     cfg.update(date_basis=date_basis, assessment_date_mode="latest_completed",
                conversion_enabled=False, conversion_confirmed=False)
     cfg["programid"] = cfg.get("programid") or "Local dashboard"
-    return build_draft(state, cfg, record_ids=ids)
+    return build_draft(state, cfg, record_ids=ids, scored_rows=scored_rows)
 
 
 def annotate_summary_pgys(state: dict, report, source_rows, *, cumulative=False):

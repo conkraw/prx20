@@ -1,0 +1,44 @@
+EPA TRACKER FASTER INTERFACE: VALIDATION
+
+Test command:
+  python -m pytest -q --disable-warnings
+
+.................................................................s...... [ 18%]
+........................................................................ [ 37%]
+........................................................................ [ 55%]
+........................................................................ [ 74%]
+........................................................................ [ 92%]
+............................                                     [100%]
+387 passed, 5 skipped, 8 subtests passed in 3.92s
+
+No live Streamlit browser test was performed. Five tests/modules were skipped,
+including the modules that require the unavailable Streamlit runtime.
+New UI tests use a deterministic Streamlit double. Authentication tests still
+exercise the real password hashing/verification and access-gate code.
+
+Additional direct comparison against the prior grouped-PDF version:
+- Identical selected scored-response rows and full mapped EPA draft for a
+  fictional 120-evaluation, 12-resident, 4-form dataset.
+- Identical full drafts in five additional cases, including unconfirmed scoring,
+  missing mapping, missing completion date, and missing roster information.
+
+Local benchmark (seconds):
+  Prior dashboard median, three runs: 2.5457
+  Updated dashboard, first calculation: 0.1026
+  Updated dashboard median, three repeat runs: 0.0503
+  Estimated retained derived cache: 2,259,884 bytes
+
+The benchmark runs the dashboard's Python control flow and calculations with a
+simulated UI. It excludes network/GitHub calls, password verification, browser
+rendering, and hosting startup. Data is fictional. It is not a live speed test.
+
+Unchanged original modules verified byte-for-byte:
+  epa_core.py
+  epa_pgy.py
+  epa_pdf.py
+  epa_grouped_pdf.py
+  epa_storage.py
+  epa_form_discovery.py
+  epa_question_text.py
+  appd_template.xlsx
+  requirements.txt

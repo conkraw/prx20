@@ -147,14 +147,16 @@ def save_numeric_review(state: dict, config: dict, rows: list[dict], expected_fi
     return updated
 
 
-def ready_review(state: dict, config: dict, rows: list[dict] | None = None) -> dict | None:
+def ready_review(state: dict, config: dict, rows: list[dict] | None = None, *, draft: dict | None = None) -> dict | None:
     saved = saved_review(state, config)
     official = appd.approved_review(state, config)
     if not saved or not saved.get("approved") or not official:
         return None
     if rows is not None and appd.digest(normalize_rows(state, rows)) != appd.digest(saved["rows"]):
         return None
-    outcome = prepare_export(state, config, saved["rows"])
+    if draft is not None and draft.get("fingerprint") != appd.input_fingerprint(state, config):
+        return None
+    outcome = prepare_export(state, config, saved["rows"], draft=draft)
     if outcome["issues"] or appd.digest(appd.normalize_review_rows(outcome["upload_rows"])) != appd.digest(official["rows"]):
         return None
     return saved

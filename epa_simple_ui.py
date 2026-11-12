@@ -33,10 +33,12 @@ def admin_page(state: dict, store, commit: Callable, *, forms_page: Callable,
 
 
 def export_page(state: dict, store, commit: Callable) -> None:
+    from epa_performance import cached_result
     st.header("APPD Export")
     cfg = appd.config_for(state)
     try:
-        draft = appd.build_draft(state, cfg)
+        draft = cached_result(st.session_state, state, "export-draft", cfg,
+                              lambda: appd.build_draft(state, cfg))
     except (ValueError, TypeError, KeyError) as exc:
         st.error(f"Admin > Program and dates: {exc}")
         return
@@ -115,7 +117,7 @@ def export_page(state: dict, store, commit: Callable) -> None:
             st.session_state.pop(key, None)
             st.session_state["notice"] = "Approved. Download your Data Hub file below." if approve else "Draft saved."
             st.rerun()
-    ready = workflow.ready_review(state, cfg, reviewed)
+    ready = workflow.ready_review(state, cfg, reviewed, draft=draft)
     if ready:
         snapshot = appd.digest(ready)
         st.download_button("Download Data Hub upload (.xlsx)",

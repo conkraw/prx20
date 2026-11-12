@@ -33,7 +33,9 @@ def apply_form_removal_session_cleanup() -> None:
 
 def render_form_removal(state: dict, store, commit: Callable, form_id: str) -> None:
     """Show explicit impact and require both acknowledgement and typed intent."""
-    preview = form_removal_preview(state, form_id)
+    from epa_performance import cached_result
+    preview = cached_result(st.session_state, state, "form-removal-preview", form_id,
+                            lambda: form_removal_preview(state, form_id))
     prefix = f"remove_form_{form_id}_{preview['fingerprint'][:16]}"
     with st.expander("Remove this form", expanded=False):
         st.write(f"Selected form: {preview['form_name']}")
