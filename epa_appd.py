@@ -56,7 +56,8 @@ def academic_year(day: date, start_month: int = 7) -> int:
 def defaults(today: date | None = None) -> dict:
     today = today or date.today()
     season = "FALL" if today.month >= 7 else "SPRING"
-    return {
+    from epa_export_rules import default_parameters
+    return default_parameters({
         "programid": "Penn State Pediatric Residency", "season": season,
         "year": today.year, "mapping": "GENERAL",
         "start_date": date(today.year, 7 if season == "FALL" else 1, 1).isoformat(),
@@ -64,12 +65,18 @@ def defaults(today: date | None = None) -> dict:
         "assessment_date_mode": "latest_completed", "fixed_assessment_date": today.isoformat(),
         "aggregation": "equal_evaluations", "conversion_enabled": False,
         "conversion_confirmed": False, "minimum_score": 1.0, "score_bands": [],
-    }
+    })
 
 
 def config_for(state: dict, today: date | None = None) -> dict:
+    from epa_export_rules import DEFAULTS_VERSION, default_parameters
     result = defaults(today)
-    result.update(copy.deepcopy(state.get("settings", {}).get("appd", {})))
+    saved = copy.deepcopy(state.get("settings", {}).get("appd", {}))
+    result.update(saved)
+    if saved and saved.get("cbme_defaults_version") != DEFAULTS_VERSION:
+        # The user explicitly replaced the previous examples with this residency
+        # policy. Apply it once, retain old cutoffs, and require a new approval.
+        result = default_parameters(result, preserve_previous=True)
     # This update deliberately standardizes both the dashboard and APPD evidence.
     # A legacy pooling choice is left in the archive until the next settings save,
     # but is not used for calculations. No source scores or mappings are changed.
@@ -100,20 +107,8 @@ def validate_config(config: dict) -> None:
     if config.get("conversion_enabled"):
         if not config.get("conversion_confirmed"):
             raise ValueError("Confirm the local score conversion before enabling suggestions.")
-        minimum = float(config.get("minimum_score", 1))
-        if not math.isfinite(minimum):
-            raise ValueError("The minimum average must be a finite number.")
-        previous = None
-        bands = config.get("score_bands", [])
-        if not bands:
-            raise ValueError("Add at least one average-to-level conversion row.")
-        for band in bands:
-            upper = float(band["upper"])
-            if not math.isfinite(upper) or upper < minimum or (previous is not None and upper <= previous):
-                raise ValueError("Maximum averages must increase, without repeats, and cannot be below the minimum.")
-            if band.get("code") not in APPD_CODES[1:]:
-                raise ValueError("Each conversion row needs an observed APPD level. Use 0 only for not observed.")
-            previous = upper
+        from epa_export_rules import validate_parameters
+        validate_parameters(config)
 
 
 def suggested_level(average: float | None, config: dict) -> str:
@@ -122,18 +117,8 @@ def suggested_level(average: float | None, config: dict) -> str:
     Local display labels are deliberately never used here. For example, a local
     label of '3' is not an accepted APPD supervision category.
     """
-    if average is None or not config.get("conversion_enabled") or not config.get("conversion_confirmed"):
-        return ""
-    try:
-        average = float(average)
-    except (ValueError, TypeError):
-        return ""
-    if not math.isfinite(average) or average < float(config.get("minimum_score", 1)):
-        return ""
-    for band in config.get("score_bands", []):
-        if average <= float(band["upper"]):
-            return str(band["code"])
-    return ""
+    from epa_export_rules import convert_score
+    return convert_score(average, config)
 
 
 def local_display_level(average: Any, config: dict | None = None) -> str:
@@ -654,7 +639,9 @@ def validate_review(rows: list[dict], config: dict) -> list[str]:
 
 
 def save_review(state: dict, config: dict, rows: list[dict], expected_fingerprint: str,
-                *, approved: bool, reviewer: str = "") -> dict:
+                *, approved: bool, reviewer: str = "", approval_action: str = "") -> dict:
+    if approval_action not in {"", "approve_save_prepare"}:
+        raise ValueError("Unknown export approval action.")
     if input_fingerprint(state, config_for(state)) != expected_fingerprint:
         raise ValueError("The evaluations or APPD setup changed. Reload and review the current scores before saving.")
     normalized = apply_start_date_pgys(state, rows)
@@ -665,11 +652,14 @@ def save_review(state: dict, config: dict, rows: list[dict], expected_fingerprin
         errors = validate_review(normalized, config)
         if errors:
             raise ValueError(errors[0])
-        if not clean_text(reviewer):
+        if not clean_text(reviewer) and approval_action != "approve_save_prepare":
             raise ValueError("Enter the reviewer name or initials.")
     updated = copy.deepcopy(state)
     snapshot = {"input_fingerprint": expected_fingerprint, "rows": normalized, "approved": bool(approved),
                 "reviewer": clean_text(reviewer), "saved_at": utc_now(), "config": copy.deepcopy(config)}
+    if approval_action:
+        snapshot["approval_action"] = approval_action
+        snapshot["approval_attribution"] = "Explicit button approval in a signed-in session. No individual name collected."
     updated.setdefault("settings", {}).setdefault("appd_reviews", {})[review_key(config)] = snapshot
     return updated
 

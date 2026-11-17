@@ -27,7 +27,11 @@ def make_state():
               "source_files": ["example.tab"], "overall_comments": "", "subject_comments": ""}
     state, _ = core.ingest_evaluations(state, [record])
     cfg = appd.defaults(date(2026, 11, 3))
-    cfg.update(programid="Example Program", start_date="2026-07-01", end_date="2026-11-03")
+    # Historical fixture deliberately has no conversion policy. New-install
+    # defaults are covered separately in test_cbme_defaults_dual_export.py.
+    cfg.update(programid="Example Program", start_date="2026-07-01", end_date="2026-11-03",
+               conversion_enabled=False, conversion_confirmed=False,
+               score_band_mode="upper_inclusive", minimum_score=1.0, score_bands=[])
     state["settings"]["appd"] = cfg
     state["settings"]["appd_roster"] = {"example, resident": {
         "resident": "Example, Resident", "export_id": "EXAMPLE-001",
@@ -284,7 +288,7 @@ def test_config_rejects_unrecognized_mapping_and_overlapping_thresholds():
     cfg['mapping'] = 'OTHER'
     with pytest.raises(ValueError, match="GENERAL"):
         appd.validate_config(cfg)
-    cfg.update(mapping='GENERAL', conversion_enabled=True, conversion_confirmed=True,
+    cfg.update(mapping='GENERAL', conversion_enabled=True, conversion_confirmed=True, score_band_mode='upper_inclusive',
                score_bands=[{"upper": 3, "code": "3a"}, {"upper": 2, "code": "2a"}])
     with pytest.raises(ValueError, match="increase"):
         appd.validate_config(cfg)

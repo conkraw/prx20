@@ -1,3 +1,8 @@
+LATEST UPDATE: NOVEMBER 17, 2026
+This package includes the supplied editable residency CBME defaults and separate
+raw-average and converted-rating Excel downloads. Start with
+CBME_DEFAULTS_DUAL_EXPORT_README.txt. Earlier update notes below are historical.
+
 # Faster interface update
 
 Start with FASTER_INTERFACE_README.txt for this release. The app now shows Interface v2026.11 in the sidebar.

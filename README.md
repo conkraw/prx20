@@ -1,3 +1,7 @@
+# Latest update: editable CBME defaults and two Excel exports
+
+See `CBME_DEFAULTS_DUAL_EXPORT_README.txt` for installation, defaults, and the raw-versus-converted file distinction. Earlier workflow notes are retained below for reference.
+
 # EPA Tracker
 
 See SIMPLE_WORKFLOW_README.md for the current update, staff workflow, and Data Hub format requirements.

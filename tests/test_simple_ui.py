@@ -46,7 +46,7 @@ def test_export_has_one_editor_prepopulated_with_numeric_averages():
     load_simple(fake).export_page(configured(), None, lambda *args: False)
     assert not fake.errors
     assert not fake.tab_names
-    assert len(fake.editors) == 1
+    assert len(fake.editors) == 2  # numeric review plus collapsed conversion parameters
     frame, options = fake.editors[0]
     assert frame.iloc[0]["EPA 2"] == 3
     assert options["column_config"]["EPA 2"]["kind"] == "NumberColumn"
@@ -58,13 +58,13 @@ def test_calculated_scores_are_visible_even_before_conversion_setup():
     fake = StaffUI()
     load_simple(fake).export_page(make_state(), None, lambda *args: False)
     assert fake.editors[0][0].iloc[0]["EPA 2"] == 3
-    assert any("Data Hub rules" in message for message in fake.messages)
-    assert next(kwargs for label, kwargs in fake.buttons if label == "Approve and prepare Data Hub file")["disabled"]
+    assert any("CBME conversion parameters" in message for message in fake.messages)
+    assert next(kwargs for label, kwargs in fake.buttons if label == "Approve, save and prepare both files")["disabled"]
 
 
-def test_save_numeric_draft_calls_encrypted_commit_without_rewriting_source():
+def test_one_click_calls_encrypted_commit_without_rewriting_source():
     state = configured()
-    fake = StaffUI(clicked="Save draft", edits={"numeric_editor": [("example, resident", "EPA 2", 3.25)]})
+    fake = StaffUI(clicked="Approve, save and prepare both files", edits={"numeric_editor": [("example, resident", "EPA 2", 3.25)]})
     writes = []
     with pytest.raises(Rerun):
         load_simple(fake).export_page(state, None, commit_function(state, writes))
@@ -72,12 +72,12 @@ def test_save_numeric_draft_calls_encrypted_commit_without_rewriting_source():
     saved = workflow.saved_review(writes[0], appd.config_for(writes[0]))
     assert saved["rows"][0]["EPA 2"] == 3.25
     assert writes[0]["evaluations"] == state["evaluations"]
-    assert not saved["approved"]
+    assert saved["approved"]
 
 
 def test_approval_creates_both_numeric_and_upload_snapshots():
     state = configured()
-    fake = StaffUI(clicked="Approve and prepare Data Hub file", selections={
+    fake = StaffUI(clicked="Approve, save and prepare both files", selections={
         "Reviewer name or initials": "TEST",
         "The CCC reviewed these values and the not-observed entries": True,
     })
@@ -93,7 +93,8 @@ def test_approved_table_exposes_download_without_initial_network_call():
     fake = StaffUI()
     load_simple(fake).export_page(state, None, lambda *args: False)
     label, kwargs = fake.downloads[0]
-    assert label == "Download Data Hub upload (.xlsx)"
+    assert label == "Download raw averages (.xlsx)"
+    assert fake.downloads[1][0] == "Download CBME ratings (.xlsx)"
     assert callable(kwargs["data"])
     assert not kwargs.get("disabled")
 
