@@ -20,8 +20,8 @@ RAW_DOWNLOAD_LABEL = "Download raw averages (.xlsx)"
 def admin_page(state: dict, store, commit: Callable, *, forms_page: Callable,
                review_page: Callable, settings_page: Callable) -> None:
     st.header("Admin")
-    st.caption("Set up residents, forms, and reporting dates here. Upload conversion parameters are on APPD Export.")
-    sections = ["Residents", "Forms and EPA mapping", "Program and dates", "Data review", "Advanced"]
+    st.caption("Set up residents, forms, dates, and combined competency reports here. Upload conversion parameters are on APPD Export.")
+    sections = ["Residents", "Forms and EPA mapping", "Program and dates", "Competency reports and comments", "Data review", "Advanced"]
     if st.session_state.get("simple_admin_section") == "Data Hub rules":
         st.session_state["simple_admin_section"] = "Program and dates"
     section = st.selectbox("Setup", sections, key="simple_admin_section")
@@ -31,6 +31,9 @@ def admin_page(state: dict, store, commit: Callable, *, forms_page: Callable,
         forms_page(state, store)
     elif section == "Program and dates":
         _program_setup(state, store, commit)
+    elif section == "Competency reports and comments":
+        from epa_competency_ui import competency_reports_page
+        competency_reports_page(state, store, commit)
     elif section == "Data review":
         review_page(state, store)
     else:

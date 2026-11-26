@@ -49,6 +49,11 @@ def _built_sections(builder):
     return epa_pdf.pdf_question_sections(rows, forms), context
 
 
+def _apply_filters(app):
+    # The shipped Dashboard applies its filter form only when submitted.
+    _button(app, "Apply filters").click().run()
+
+
 def test_sidebar_pdf_uses_current_filters_and_keeps_them_across_navigation(pdf_password_hash):
     original_builder = epa_pdf.build_question_pdf
     with patch("epa_storage.GitHubStore", MemoryStore), \
@@ -59,9 +64,10 @@ def test_sidebar_pdf_uses_current_filters_and_keeps_them_across_navigation(pdf_p
         _sign_in(app)
         assert builder.call_count == 0
         first_form = next(key for key, form in state["forms"].items() if form["name"] == "Example EPA")
-        app.multiselect(key="months_7").set_value([7]).run()
-        app.multiselect(key="dashboard_residents").set_value(["example, resident"]).run()
-        app.multiselect(key="dashboard_epas").set_value([first_form]).run()
+        app.multiselect(key="months_7").set_value([7])
+        app.multiselect(key="dashboard_residents").set_value(["example, resident"])
+        app.multiselect(key="dashboard_epas").set_value([first_form])
+        _apply_filters(app)
         assert not app.exception
         july_callback = _callback(download)
         assert callable(july_callback)
@@ -74,9 +80,19 @@ def test_sidebar_pdf_uses_current_filters_and_keeps_them_across_navigation(pdf_p
         assert context["academic_year_label"] == "2026-2027"
         assert context["months_label"] == "Jul 2026"
         assert context["date_basis_label"] == "Session month"
-        for page in ["Forms", "Review", "Settings", "Upload"]:
+        for page, admin_section in [
+            ("Admin", "Forms and EPA mapping"),
+            ("Admin", "Data review"),
+            ("Admin", "Program and dates"),
+            ("Upload", None),
+        ]:
             app.sidebar.radio[0].set_value(page).run()
+            if admin_section:
+                app.selectbox(key="simple_admin_section").set_value(admin_section).run()
             assert not app.exception, page
+            # PDF controls are shown on Dashboard in the shipped faster UI.
+            app.sidebar.radio[0].set_value("Dashboard").run()
+            assert not app.exception
             _callback(download)()
             sections, context = _built_sections(builder)
             assert len(sections) == 1
@@ -84,7 +100,8 @@ def test_sidebar_pdf_uses_current_filters_and_keeps_them_across_navigation(pdf_p
             assert context["months_label"] == "Jul 2026"
         app.sidebar.radio[0].set_value("Dashboard").run()
         assert app.multiselect(key="months_7").value == [7]
-        app.multiselect(key="months_7").set_value([8]).run()
+        app.multiselect(key="months_7").set_value([8])
+        _apply_filters(app)
         _callback(download)()
         sections, context = _built_sections(builder)
         assert sections[0]["questions"][0]["average"] == 2
@@ -104,17 +121,19 @@ def test_pdf_date_basis_year_and_empty_month_selection_are_exact(pdf_password_ha
         app = _app(pdf_password_hash, state)
         _sign_in(app)
         first_form = next(key for key, form in state["forms"].items() if form["name"] == "Example EPA")
-        app.multiselect(key="dashboard_residents").set_value(["example, resident"]).run()
-        app.multiselect(key="dashboard_epas").set_value([first_form]).run()
-        app.selectbox(key="dashboard_year_7").set_value(2025).run()
-        app.multiselect(key="months_7").set_value([7]).run()
+        app.multiselect(key="dashboard_residents").set_value(["example, resident"])
+        app.multiselect(key="dashboard_epas").set_value([first_form])
+        app.selectbox(key="dashboard_year_7").set_value(2025)
+        app.multiselect(key="months_7").set_value([7])
+        _apply_filters(app)
         _callback(download)()
         sections, context = _built_sections(builder)
         assert sections[0]["questions"][0]["average"] == 1
         assert context["academic_year_label"] == "2025-2026"
-        app.selectbox(key="dashboard_year_7").set_value(2026).run()
-        app.radio(key="dashboard_date_basis").set_value("Completion month").run()
-        app.multiselect(key="months_7").set_value([10]).run()
+        app.selectbox(key="dashboard_year_7").set_value(2026)
+        app.radio(key="dashboard_date_basis").set_value("Completion month")
+        app.multiselect(key="months_7").set_value([10])
+        _apply_filters(app)
         assert not app.exception
         _callback(download)()
         sections, context = _built_sections(builder)
@@ -122,7 +141,8 @@ def test_pdf_date_basis_year_and_empty_month_selection_are_exact(pdf_password_ha
         assert sections[0]["questions"][0]["average"] == pytest.approx(7 / 3)
         assert context["date_basis_label"] == "Completion month"
         assert context["months_label"] == "Oct 2026"
-        app.multiselect(key="months_7").set_value([]).run()
+        app.multiselect(key="months_7").set_value([])
+        _apply_filters(app)
         assert not app.exception
         assert _last_pdf_call(download).kwargs["disabled"] is True
         assert _callback(download) == b""
@@ -137,9 +157,10 @@ def test_saved_scoring_change_refreshes_pdf_without_mutating_old_snapshot(pdf_pa
         app = _app(pdf_password_hash, state)
         _sign_in(app)
         first_form = next(key for key, form in state["forms"].items() if form["name"] == "Example EPA")
-        app.multiselect(key="months_7").set_value([7]).run()
-        app.multiselect(key="dashboard_residents").set_value(["example, resident"]).run()
-        app.multiselect(key="dashboard_epas").set_value([first_form]).run()
+        app.multiselect(key="months_7").set_value([7])
+        app.multiselect(key="dashboard_residents").set_value(["example, resident"])
+        app.multiselect(key="dashboard_epas").set_value([first_form])
+        _apply_filters(app)
         original_callback = _callback(download)
         app.sidebar.radio[0].set_value("Admin").run()
         app.selectbox(key="simple_admin_section").set_value("Forms and EPA mapping").run()
@@ -151,6 +172,8 @@ def test_saved_scoring_change_refreshes_pdf_without_mutating_old_snapshot(pdf_pa
         assert not app.exception
         assert not app.error
         assert not MemoryStore.saved["forms"][first_form]["scoring_confirmed"]
+        app.sidebar.radio[0].set_value("Dashboard").run()
+        assert not app.exception
         _callback(download)()
         sections, _ = _built_sections(builder)
         assert all(question["average_text"] == "" for question in sections[0]["questions"])

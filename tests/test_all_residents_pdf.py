@@ -12,7 +12,7 @@ import streamlit as st
 
 import epa_pdf
 from epa_auth import hash_password
-from test_pdf_ui import _report_state
+from test_pdf_ui import _apply_filters, _report_state
 from test_ui import MemoryStore, PASSWORD, _app, _sign_in
 
 
@@ -52,9 +52,10 @@ def test_bulk_export_bypasses_only_residents_and_preserves_individual_selection(
         first_form = _first_form(state)
         app = _app(bulk_password_hash, state)
         _sign_in(app)
-        app.multiselect(key="months_7").set_value([7]).run()
-        app.multiselect(key="dashboard_residents").set_value(["example, resident"]).run()
-        app.multiselect(key="dashboard_epas").set_value([first_form]).run()
+        app.multiselect(key="months_7").set_value([7])
+        app.multiselect(key="dashboard_residents").set_value(["example, resident"])
+        app.multiselect(key="dashboard_epas").set_value([first_form])
+        _apply_filters(app)
         assert not app.exception
         assert builder.call_count == 0
         preferences = copy.deepcopy(app.session_state["_epa_report_filters"])
@@ -87,6 +88,8 @@ def test_bulk_export_bypasses_only_residents_and_preserves_individual_selection(
         app.sidebar.radio[0].set_value("Admin").run()
         app.selectbox(key="simple_admin_section").set_value("Data review").run()
         assert not app.exception
+        app.sidebar.radio[0].set_value("Dashboard").run()
+        assert not app.exception
         _data(download, BULK)()
         sections, _, _ = _sections(builder)
         assert len(sections) == 2
@@ -107,9 +110,10 @@ def test_bulk_remains_available_when_selected_resident_has_no_rows_then_disables
         state = _report_state()
         app = _app(bulk_password_hash, state)
         _sign_in(app)
-        app.multiselect(key="dashboard_residents").set_value(["example, other resident"]).run()
-        app.multiselect(key="dashboard_epas").set_value([_first_form(state)]).run()
-        app.multiselect(key="months_7").set_value([8]).run()
+        app.multiselect(key="dashboard_residents").set_value(["example, other resident"])
+        app.multiselect(key="dashboard_epas").set_value([_first_form(state)])
+        app.multiselect(key="months_7").set_value([8])
+        _apply_filters(app)
         assert not app.exception
         assert _call(download, INDIVIDUAL).kwargs.get("disabled") is True
         assert _data(download, INDIVIDUAL) == b""
@@ -122,7 +126,8 @@ def test_bulk_remains_available_when_selected_resident_has_no_rows_then_disables
         assert context["months_label"] == "Aug 2026"
         assert set(rows["period"]) == {"2026-08"}
         assert app.multiselect(key="dashboard_residents").value == ["example, other resident"]
-        app.multiselect(key="months_7").set_value([]).run()
+        app.multiselect(key="months_7").set_value([])
+        _apply_filters(app)
         assert not app.exception
         for label in [INDIVIDUAL, BULK]:
             assert _call(download, label).kwargs.get("disabled") is True
@@ -136,9 +141,10 @@ def test_no_resident_filter_makes_both_exports_equal_and_keeps_completion_basis(
         state = _report_state()
         app = _app(bulk_password_hash, state)
         _sign_in(app)
-        app.multiselect(key="dashboard_epas").set_value([_first_form(state)]).run()
-        app.radio(key="dashboard_date_basis").set_value("Completion month").run()
-        app.multiselect(key="months_7").set_value([10]).run()
+        app.multiselect(key="dashboard_epas").set_value([_first_form(state)])
+        app.radio(key="dashboard_date_basis").set_value("Completion month")
+        app.multiselect(key="months_7").set_value([10])
+        _apply_filters(app)
         assert not app.exception
         _data(download, INDIVIDUAL)()
         individual_sections, individual_rows, individual_context = _sections(builder)

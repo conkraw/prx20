@@ -74,6 +74,8 @@ def validate_state(state: dict) -> None:
     for key in ("forms", "evaluations", "conflicts", "settings"):
         if not isinstance(state.get(key), dict):
             raise ValueError("The saved archive is incomplete. It has not been changed.")
+    if "competency_reports" in state and not isinstance(state["competency_reports"], dict):
+        raise ValueError("Saved competency reports could not be read. The archive has not been changed.")
     start = state["settings"].get("academic_year_start_month", 7)
     if not isinstance(start, int) or not 1 <= start <= 12:
         raise ValueError("The saved academic-year setting is invalid. It has not been changed.")

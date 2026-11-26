@@ -1,0 +1,27 @@
+EPA TRACKER COMPETENCY REPORTS AND COMMENTS: VALIDATION
+November 26, 2026
+
+Command: python3 -m pytest -q -rs
+Result: 643 passed, 1 skipped, 1 warning, 27 subtests passed in 20.41s
+
+The skipped legacy test needs supplied resident exports, which are intentionally excluded from the application package.
+The warning is an installed third-party pytest plugin deprecation. It is not an app exception.
+
+Python: 3.12.14
+Pinned application dependencies tested:
+streamlit==1.66.1
+pandas==3.1.0
+altair==6.3.0
+requests==2.34.2
+cryptography==50.0.2
+openpyxl==3.1.5
+reportlab==4.4.9
+pypdf==6.21.4
+
+Source PDF check: all three supplied files yielded exactly 22 expected competency labels and string values. Their page-one tables were visually reviewed.
+UI check: real Streamlit AppTest ran upload, resident selection, ambiguous-name protection, explicit dates, saving, editing, mixed valid/invalid batches, caching, and the PDF download callback.
+Workflow check: encrypted encode/decode round trip, duplicate handling, separate source versions, concurrent edits, and retained EPA averages and both approved Excel output values.
+PDF check: all source ranges and zero values retained, literal comments preserved, separate undated and resident-comment sections, long-paragraph pagination, and a one-page two-rotation example rendered and visually reviewed.
+Existing test maintenance: six navigation/filter failures reproduced on the original source ZIP. Updated those tests to use the already-shipped Apply filters and Admin navigation. All 83 original assertions retained. No related production behavior changed.
+
+No live GitHub archive was modified. Tests use synthetic data and simulated storage. The example PDF is fictional.
