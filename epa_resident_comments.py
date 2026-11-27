@@ -16,6 +16,7 @@ from epa_question_text import is_placeholder_question_text, saved_wording_candid
 
 
 MISSING_ROTATION = "Rotation not recorded"
+DATE_BASES = ("completed_at", "session_date")
 _EMPTY_RESPONSES = {"", "n/a", "na", "not applicable", "not observed", "not assessed",
                     "unable to assess", "no opportunity to observe", "none", "nan", "null"}
 _SCALE_LABELS = {
@@ -52,6 +53,25 @@ def _date_bound(value: Any, label: str):
     if result is None:
         raise ValueError(f"Enter a valid {label} for the comments report.")
     return result
+
+
+def _record_dates(record: dict):
+    completed = as_date(record.get("completed_at")) or as_date(record.get("completed_at_raw"))
+    session = as_date(record.get("session_date")) or as_date(record.get("session_date_raw"))
+    return completed, session
+
+
+def _pick_date(completed, session, requested: str):
+    preferred, other = ((completed, session) if requested == "completed_at" else (session, completed))
+    if preferred is not None:
+        return preferred, requested, False
+    if other is not None:
+        return other, "session_date" if requested == "completed_at" else "completed_at", True
+    return None, "unknown", False
+
+
+def _in_period(day, start, end) -> bool:
+    return day is not None and not ((start and day < start) or (end and day > end))
 
 
 def _numeric_or_rating(value: str) -> bool:
@@ -108,19 +128,19 @@ def _question_prompt(qid: str, answer: dict, question: dict,
 
 
 def _evaluation(record_id: str, record: dict, forms: dict,
-                wording: dict[str, list[str]]) -> dict:
+                wording: dict[str, list[str]], *, date_basis: str = "completed_at") -> dict:
     match = match_form(record, forms)
     form_id = match["form_id"]
     form = forms.get(form_id, {})
     questions = {str(q["id"]): q for q in form.get("questions", [])}
     order = {str(q["id"]): index for index, q in enumerate(form.get("questions", []), 1)}
     notes = []
-    completed = as_date(record.get("completed_at")) or as_date(record.get("completed_at_raw"))
-    session = as_date(record.get("session_date")) or as_date(record.get("session_date_raw"))
-    day = completed or session
-    basis = "completed_at" if completed else "session_date" if session else "unknown"
-    if basis == "session_date":
+    completed, session = _record_dates(record)
+    day, basis, fallback = _pick_date(completed, session, date_basis)
+    if fallback and basis == "session_date":
         notes.append("Completion date is missing or invalid. Session date is used.")
+    elif fallback and basis == "completed_at":
+        notes.append("Session date is missing or invalid. Completion date is used.")
     elif basis == "unknown":
         notes.append("No usable completion or session date. Reporting period is unknown.")
     rotation = _text(record.get("rotation"))
@@ -164,6 +184,7 @@ def _evaluation(record_id: str, record: dict, forms: dict,
         "resident_key": normalize_key(record.get("resident_key") or record.get("resident")),
         "evaluator": _text(record.get("evaluator")), "evaluator_status": _text(record.get("evaluator_status")),
         "rotation": rotation, "date": day.isoformat() if day else None, "date_basis": basis,
+        "date_fallback": fallback,
         "completed_at": record.get("completed_at"), "session_date": record.get("session_date"),
         "form_id": form_id, "form_name": _text(form.get("name")) or "Form not identified",
         "form_match_status": match["status"],
@@ -173,17 +194,24 @@ def _evaluation(record_id: str, record: dict, forms: dict,
     }
 
 
-def collect_resident_comments(state: dict, resident_key: str, start_date=None, end_date=None) -> dict:
+def collect_resident_comments(state: dict, resident_key: str, start_date=None, end_date=None,
+                              *, date_basis: str = "completed_at") -> dict:
     """Return dated comments grouped by rotation and undated comments separately.
 
     Date bounds are inclusive. Only active saved evaluations are considered,
     never pending conflict alternatives. Resident names must match their exact
     normalized key. No abbreviation, substring, or fuzzy-name matching occurs.
     This function is read-only and does not depend on scoring confirmation.
+    The requested date is used first, with an explicitly labeled fallback to
+    the other date when it is unavailable. Completion date remains the default
+    for existing saved reports and callers. Diagnostics explain which saved
+    evaluations were included without widening resident or date selection.
     """
     key = normalize_key(resident_key)
     if not key:
         raise ValueError("Choose a resident for the comments report.")
+    if date_basis not in DATE_BASES:
+        raise ValueError("Choose Session Date or Date Completed for the comments report.")
     start = _date_bound(start_date, "start date")
     end = _date_bound(end_date, "end date")
     if start and end and start > end:
@@ -198,6 +226,11 @@ def collect_resident_comments(state: dict, resident_key: str, start_date=None, e
     grouped = {}
     undated = []
     included = []
+    diagnostic_rows = []
+    available_dates = []
+    alternate_basis = "session_date" if date_basis == "completed_at" else "completed_at"
+    alternate_in_period = 0
+    alternate_additional = 0
     counts = {
         "resident_evaluations": len(records), "in_period_evaluations": 0,
         "out_of_period_evaluations": 0, "evaluations_with_comments": 0,
@@ -205,20 +238,51 @@ def collect_resident_comments(state: dict, resident_key: str, start_date=None, e
         "undated_feedback_items": 0, "undated_resident_comment_items": 0,
         "missing_rotation_evaluations": 0, "session_date_fallback_evaluations": 0,
         "duplicate_fields_suppressed": 0,
+        "resident_evaluations_with_comments": 0, "evaluations_without_comments": 0,
+        "in_period_without_comments": 0, "out_of_period_with_comments": 0,
+        "unknown_date_evaluations": 0, "completed_date_fallback_evaluations": 0,
+        "date_fallback_evaluations": 0,
     }
     for record_id, record in records:
-        evaluation = _evaluation(record_id, record, forms, wording)
+        evaluation = _evaluation(record_id, record, forms, wording, date_basis=date_basis)
         has_comments = bool(evaluation["feedback"] or evaluation["resident_comments"])
-        if not evaluation["date"]:
+        day = as_date(evaluation["date"])
+        inside = _in_period(day, start, end)
+        completed, session = _record_dates(record)
+        alternate_day, _, _ = _pick_date(completed, session, alternate_basis)
+        if has_comments:
+            counts["resident_evaluations_with_comments"] += 1
+            if day is not None:
+                available_dates.append(day)
+            if _in_period(alternate_day, start, end):
+                alternate_in_period += 1
+                if not inside:
+                    alternate_additional += 1
+        else:
+            counts["evaluations_without_comments"] += 1
+        diagnostic_rows.append({
+            "id": record_id, "rotation": evaluation["rotation"],
+            "session_date": session.isoformat() if session else None,
+            "completed_date": completed.isoformat() if completed else None,
+            "selected_date": evaluation["date"], "date_basis": evaluation["date_basis"],
+            "date_fallback": evaluation["date_fallback"],
+            "comment_fields": len(evaluation["feedback"]) + len(evaluation["resident_comments"]),
+            "status": ("no_saved_comments" if not has_comments else "date_unavailable" if day is None
+                       else "included" if inside else "outside_period"),
+        })
+        if day is None:
+            counts["unknown_date_evaluations"] += 1
             if has_comments:
                 undated.append(evaluation)
             continue
-        day = as_date(evaluation["date"])
-        if (start and day < start) or (end and day > end):
+        if not inside:
             counts["out_of_period_evaluations"] += 1
+            if has_comments:
+                counts["out_of_period_with_comments"] += 1
             continue
         counts["in_period_evaluations"] += 1
         if not has_comments:
+            counts["in_period_without_comments"] += 1
             continue
         included.append(evaluation)
         rotation = evaluation["rotation"]
@@ -230,6 +294,7 @@ def collect_resident_comments(state: dict, resident_key: str, start_date=None, e
     for group in rotations:
         group["evaluations"].sort(key=lambda value: (value["date"], value["id"]), reverse=True)
     undated.sort(key=lambda value: (normalize_key(value["rotation"]), value["id"]))
+    diagnostic_rows.sort(key=lambda value: (value["selected_date"] or "", value["id"]), reverse=True)
     counts.update({
         "evaluations_with_comments": len(included),
         "feedback_items": sum(len(e["feedback"]) for e in included),
@@ -238,7 +303,9 @@ def collect_resident_comments(state: dict, resident_key: str, start_date=None, e
         "undated_feedback_items": sum(len(e["feedback"]) for e in undated),
         "undated_resident_comment_items": sum(len(e["resident_comments"]) for e in undated),
         "missing_rotation_evaluations": sum(not e["rotation"].strip() for e in included),
-        "session_date_fallback_evaluations": sum(e["date_basis"] == "session_date" for e in included),
+        "session_date_fallback_evaluations": sum(e["date_fallback"] and e["date_basis"] == "session_date" for e in included),
+        "completed_date_fallback_evaluations": sum(e["date_fallback"] and e["date_basis"] == "completed_at" for e in included),
+        "date_fallback_evaluations": sum(e["date_fallback"] for e in included),
         "duplicate_fields_suppressed": sum(e["duplicate_fields_suppressed"] for e in included + undated),
     })
     notes = []
@@ -246,10 +313,34 @@ def collect_resident_comments(state: dict, resident_key: str, start_date=None, e
         notes.append(f"{len(undated)} evaluation(s) with comments have no usable date and are shown separately. Their reporting period cannot be confirmed.")
     if counts["session_date_fallback_evaluations"]:
         notes.append(f"{counts['session_date_fallback_evaluations']} evaluation(s) use session date because completion date is unavailable.")
+    if counts["completed_date_fallback_evaluations"]:
+        notes.append(f"{counts['completed_date_fallback_evaluations']} evaluation(s) use completion date because session date is unavailable.")
     if counts["missing_rotation_evaluations"]:
         notes.append(f"{counts['missing_rotation_evaluations']} evaluation(s) have no saved rotation.")
+    if counts["out_of_period_with_comments"]:
+        notes.append(f"{counts['out_of_period_with_comments']} evaluation(s) have saved comments outside the selected dates.")
+    if included:
+        status = "comments_found"
+    elif not records:
+        status = "no_resident_evaluations"
+    elif not counts["resident_evaluations_with_comments"]:
+        status = "no_saved_comments"
+    elif counts["out_of_period_with_comments"]:
+        status = "outside_period"
+    else:
+        status = "undated_only"
     return {
         "resident_key": key, "start_date": start.isoformat() if start else None,
-        "end_date": end.isoformat() if end else None, "rotations": rotations,
+        "end_date": end.isoformat() if end else None, "date_basis": date_basis,
+        "rotations": rotations,
         "undated": undated, "counts": counts, "notes": notes,
+        "diagnostics": {
+            "status": status,
+            "available_start": min(available_dates).isoformat() if available_dates else None,
+            "available_end": max(available_dates).isoformat() if available_dates else None,
+            "alternate_date_basis": alternate_basis,
+            "alternate_in_period_with_comments": alternate_in_period,
+            "alternate_additional_with_comments": alternate_additional,
+            "evaluations": diagnostic_rows,
+        },
     }

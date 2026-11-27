@@ -11,7 +11,7 @@ import streamlit as st
 from epa_appd import config_for, digest, residents_in
 from epa_competency_reports import (
     linked_report, matching_residents, original_pdf, report_filename, report_id, report_label,
-    save_report_links, saved_reports, suggested_resident,
+    resident_link_candidates, save_report_links, saved_reports, suggested_resident,
 )
 from epa_core import normalize_key
 from epa_performance import cached_result
@@ -23,6 +23,7 @@ VIEW = "View saved reports"
 SOURCE_NAME = "__competency_source_name__"
 MAX_BATCH_FILES = 20
 MAX_BATCH_BYTES = 30 * 1024 * 1024
+DATE_LABELS = {"session_date": "Rotation / Session Date", "completed_at": "Date Completed"}
 
 
 def _open_saved(report_key: str) -> None:
@@ -33,8 +34,10 @@ def _open_saved(report_key: str) -> None:
 def _resident_selector(state: dict, report: dict, key: str, *, existing: bool = False) -> tuple[str, str]:
     names = residents_in(state)
     source_name = str(report.get("resident") or "").strip()
+    candidates = resident_link_candidates(state, source_name)
     ambiguous = len(matching_residents(state, source_name)) > 1
-    options = [SOURCE_NAME] + list(names)
+    candidate_keys = [row["resident_key"] for row in candidates if row["resident_key"] in names]
+    options = [SOURCE_NAME] + candidate_keys + [name for name in names if name not in candidate_keys]
     chosen = report.get("resident_key") if existing else suggested_resident(state, source_name)
     index = options.index(chosen) if chosen in options else 0
     def label(value):
@@ -47,6 +50,9 @@ def _resident_selector(state: dict, report: dict, key: str, *, existing: bool = 
         if ambiguous:
             st.warning("More than one saved resident matches the name or ID in this PDF. Choose the correct resident before saving.")
             return "", ""
+        possible = [row for row in candidates if row.get("evaluations", 0)]
+        if possible:
+            st.info("Saved resident names that may match this PDF: " + ", ".join(row["resident"] for row in possible) + ". Choose the correct saved resident above to include those comments.")
         st.caption("Uses the name in this PDF. If evaluations use a different name or name order, choose that resident above.")
         return normalize_key(source_name), source_name
     if suggested_resident(state, source_name) != selected:
@@ -59,6 +65,14 @@ def _date_choices(start, end, prefix: str):
     start = left.date_input("Comments from", value=as_date(start) or date.today(), key=prefix + "_start")
     end = right.date_input("Through", value=as_date(end) or date.today(), key=prefix + "_end")
     return start, end
+
+
+def _date_basis_choice(value: str, prefix: str) -> str:
+    basis = st.selectbox("Match comments by", list(DATE_LABELS),
+                         index=list(DATE_LABELS).index(value) if value in DATE_LABELS else 1,
+                         format_func=DATE_LABELS.get, key=prefix + "_basis")
+    st.caption("Rotation / Session Date keeps late-completed evaluations with their rotation. If the chosen date is missing, the other date is used and labeled.")
+    return basis
 
 
 def _score_table(report: dict) -> None:
@@ -84,8 +98,17 @@ def _evaluation_comments(evaluation: dict) -> None:
     evaluator = evaluation.get("evaluator") or "Evaluator not listed"
     status = evaluation.get("evaluator_status")
     st.caption(evaluator + (f" | {status}" if status else ""))
-    if evaluation.get("date_basis") == "session_date":
-        st.caption("Session Date used because Date Completed is missing or invalid.")
+    dates = []
+    session = as_date(evaluation.get("session_date"))
+    completed = as_date(evaluation.get("completed_at"))
+    if session:
+        dates.append("Session Date: " + session.isoformat())
+    if completed:
+        dates.append("Date Completed: " + completed.isoformat())
+    if dates:
+        st.caption(" | ".join(dates))
+    if evaluation.get("date_fallback"):
+        st.caption(DATE_LABELS.get(evaluation.get("date_basis"), "Other date") + " used because the selected date is missing or invalid.")
     for item in evaluation.get("feedback", []):
         prompt = item.get("question")
         if prompt:
@@ -108,10 +131,44 @@ def _evaluation_comments(evaluation: dict) -> None:
 
 def _comments_view(comments: dict) -> None:
     st.subheader("Comments by rotation")
-    st.caption("Original written feedback from the saved New Innovations evaluations. Date Completed is used first, with Session Date as a labeled fallback.")
+    basis = DATE_LABELS.get(comments.get("date_basis"), "Date Completed")
+    st.caption(f"Original written feedback from every question, regardless of its position on the form. Matching by {basis}.")
     groups = comments.get("rotations", [])
+    counts = comments.get("counts", {})
+    diagnostics = comments.get("diagnostics", {})
+    status = diagnostics.get("status")
+    outside = counts.get("out_of_period_with_comments", 0)
     if not groups:
-        st.info("No saved narrative comments were found for this resident in these dates. Upload the New Innovations evaluation TAB files on Upload, or check the resident link and dates below.")
+        if status == "no_resident_evaluations":
+            st.info("No saved evaluations match this report's linked resident name. Check Link comments for resident above, including any middle name. If this resident's evaluations have not been imported, upload their New Innovations TAB files.")
+        elif status == "no_saved_comments":
+            st.info(f"Found {counts.get('resident_evaluations', 0)} saved evaluations for this resident, but their saved response and comment fields contain no written feedback.")
+        elif status == "outside_period":
+            st.info(f"The comments are saved. {outside} evaluation(s) with written feedback fall outside the selected dates when matched by {basis}. Adjust the dates or date choice above, then select Update comments.")
+            if diagnostics.get("available_start"):
+                st.caption(f"Saved comments span {diagnostics['available_start']} to {diagnostics['available_end']} using {basis}.")
+        elif status == "undated_only":
+            st.info("Written comments are saved, but their evaluations have no usable date. They appear separately below and in the PDF.")
+        else:
+            st.info("No saved narrative comments were found for this resident in these dates. Check the resident link and dates above.")
+    else:
+        st.caption(f"Showing {counts.get('evaluations_with_comments', 0)} evaluation(s) with comments. {outside} other evaluation(s) with comments are outside the selected dates.")
+    alternate = diagnostics.get("alternate_additional_with_comments", 0)
+    if alternate:
+        alternate_label = DATE_LABELS.get(diagnostics.get("alternate_date_basis"), "the other date")
+        st.info(f"{alternate} excluded evaluation(s) with comments fall inside this period using {alternate_label}. You can choose that date above and select Update comments.")
+    rows = diagnostics.get("evaluations", [])
+    if rows:
+        with st.expander("Check included and excluded evaluations", expanded=not bool(groups)):
+            labels = {"included": "Shown", "outside_period": "Outside selected dates",
+                      "date_unavailable": "Shown separately without a date", "no_saved_comments": "No written feedback"}
+            check = [{"Rotation": row.get("rotation") or "Rotation not recorded",
+                      "Session Date": row.get("session_date") or "",
+                      "Date Completed": row.get("completed_date") or "",
+                      "Date used": row.get("selected_date") or "",
+                      "Comment fields": row.get("comment_fields", 0),
+                      "Status": labels.get(row.get("status"), row.get("status", ""))} for row in rows]
+            st.dataframe(pd.DataFrame(check), hide_index=True, width="stretch")
     for group in groups:
         evaluations = group.get("evaluations", [])
         label = f"{group['rotation']} ({len(evaluations)} evaluation" + ("s)" if len(evaluations) != 1 else ")")
@@ -165,6 +222,7 @@ def _upload_reports(state: dict, store, commit) -> None:
     batch_key = digest(sorted(seen))[:16]
     st.info("These PDFs do not identify a calendar year. Choose the dates for the comments you want attached. The dates below start from your current program setup.")
     start, end = _date_choices(cfg["start_date"], cfg["end_date"], "competency_batch_" + batch_key)
+    date_basis = _date_basis_choice("session_date", "competency_batch_" + batch_key)
     st.caption("These comment dates apply to every report in this upload.")
     selections = []
     current = saved_reports(state)
@@ -192,7 +250,7 @@ def _upload_reports(state: dict, store, commit) -> None:
                  disabled=not all(key and name for _, _, key, name in selections)):
         try:
             entries = [linked_report(report, data, resident_key=key, resident_name=name,
-                                     start_date=start, end_date=end) for report, data, key, name in selections]
+                                     start_date=start, end_date=end, date_basis=date_basis) for report, data, key, name in selections]
             expected = {entry["id"]: digest(current.get(entry["id"])) for entry in entries}
             def apply(latest):
                 return save_report_links(latest, entries, expected)
@@ -220,9 +278,11 @@ def _view_reports(state: dict, store, commit) -> None:
     st.caption(f"{report.get('program', '')} | {report.get('season', '')} | Reported PGY{report.get('pgy', '')}")
     st.caption(f"Comments: {report['comment_start']} through {report['comment_end']}")
     _score_table(report)
-    comments = cached_result(st.session_state, state, "competency-comments",
-                             [report["resident_key"], report["comment_start"], report["comment_end"]],
-                             lambda: collect_resident_comments(state, report["resident_key"], report["comment_start"], report["comment_end"]))
+    _edit_comment_selection(state, report, selected, store, commit)
+    date_basis = report.get("comment_date_basis", "completed_at")
+    comments = cached_result(st.session_state, state, "competency-comments-visibility-v2",
+                             [report["resident_key"], report["comment_start"], report["comment_end"], date_basis],
+                             lambda: collect_resident_comments(state, report["resident_key"], report["comment_start"], report["comment_end"], date_basis=date_basis))
     snapshot = {key: copy.deepcopy(value) for key, value in report.items() if key != "source_pdf_b64"}
     def download():
         from epa_competency_pdf import build_competency_comments_pdf
@@ -232,30 +292,36 @@ def _view_reports(state: dict, store, commit) -> None:
                        on_click="ignore", width="stretch", key="competency_download_" + selected)
     st.caption("Includes the scores above followed by all available comments grouped by rotation. New saved evaluations in these dates appear when you reload saved data.")
     _comments_view(comments)
-    with st.expander("Resident link, dates, and original PDF", expanded=False):
+    with st.expander("Original competency PDF", expanded=False):
         st.caption("PDF resident: " + str(report.get("resident") or "Not listed"))
         st.caption("Source: " + str(report.get("source_filename") or "Uploaded PDF"))
-        revision = digest({key: value for key, value in report.items() if key != "source_pdf_b64"})[:16]
-        with st.form("competency_edit_" + revision):
-            rkey, name = _resident_selector(state, report, "competency_edit_resident_" + revision, existing=True)
-            start, end = _date_choices(report["comment_start"], report["comment_end"], "competency_edit_" + revision)
-            submitted = st.form_submit_button("Save resident and dates")
-        if submitted:
-            try:
-                entry = linked_report(report, original_pdf(report), resident_key=rkey, resident_name=name,
-                                      start_date=start, end_date=end)
-                expected = {selected: digest(report)}
-                def apply(latest):
-                    return save_report_links(latest, [entry], expected)
-                if commit(store, apply):
-                    st.session_state["notice"] = "Resident and comment dates saved."
-                    _open_saved(selected)
-            except ValueError as exc:
-                st.error(str(exc))
         source_snapshot = copy.deepcopy(report)
         st.download_button("Download original uploaded PDF", data=lambda: original_pdf(source_snapshot),
                            file_name=str(report.get("source_filename") or "original_competency_report.pdf"),
                            mime="application/pdf", on_click="ignore", key="competency_original_" + selected)
+
+
+def _edit_comment_selection(state: dict, report: dict, selected: str, store, commit) -> None:
+    revision = digest({key: value for key, value in report.items() if key != "source_pdf_b64"})[:16]
+    with st.form("competency_edit_" + revision):
+        st.write("Resident and dates for comments")
+        st.caption("PDF name: " + str(report.get("resident") or "Not listed"))
+        rkey, name = _resident_selector(state, report, "competency_edit_resident_" + revision, existing=True)
+        start, end = _date_choices(report["comment_start"], report["comment_end"], "competency_edit_" + revision)
+        date_basis = _date_basis_choice(report.get("comment_date_basis", "completed_at"), "competency_edit_" + revision)
+        submitted = st.form_submit_button("Update comments", type="primary")
+    if submitted:
+        try:
+            entry = linked_report(report, original_pdf(report), resident_key=rkey, resident_name=name,
+                                  start_date=start, end_date=end, date_basis=date_basis)
+            expected = {selected: digest(report)}
+            def apply(latest):
+                return save_report_links(latest, [entry], expected)
+            if commit(store, apply):
+                st.session_state["notice"] = "Resident and date selection saved. Comments updated."
+                _open_saved(selected)
+        except ValueError as exc:
+            st.error(str(exc))
 
 
 def competency_reports_page(state: dict, store, commit) -> None:

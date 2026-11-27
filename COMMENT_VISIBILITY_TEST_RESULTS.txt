@@ -1,0 +1,32 @@
+EPA TRACKER: COMMENT VISIBILITY FIX VALIDATION
+November 26, 2026
+
+Command: python3 -m pytest -q -rs
+Result: 707 passed, 1 skipped, 1 warning, 27 subtests passed in 21.85s
+
+One legacy test is skipped because its private resident exports are intentionally excluded. The warning is an installed pytest-plugin deprecation, not an app error.
+
+Verified with the pinned application versions:
+streamlit==1.66.1
+pandas==3.1.0
+altair==6.3.0
+requests==2.34.2
+cryptography==50.0.2
+openpyxl==3.1.5
+reportlab==4.4.9
+pypdf==6.21.4
+
+Focused scenarios:
+- Narrative comment questions before, between, and after numeric questions.
+- Synthetic TAB import preserves middle comment fields and trailing scores.
+- Known, unconfirmed, and unknown forms retain written feedback.
+- September session completed in November, tested with both selectable date bases.
+- Both labeled date fallbacks and separate undated comments.
+- Resident-name mismatch, exact-name ambiguity, optional middle names, and approved export aliases.
+- Suggestions do not merge resident records or change links without selection and saving.
+- Distinct diagnostics for unmatched resident, absent written feedback, and out-of-period comments.
+- Streamlit upload, saved-report editing, cache refresh, and PDF download callback.
+- Selected date basis and both source dates visible in generated PDFs.
+- Existing scoring and both approved Excel workbook values preserved.
+
+The screenshots show stored comments but do not show the selected report resident/date filters. Tests reproduce plausible filter exclusions and verify the corrected controls and diagnostics. No live saved archive was accessed or changed.

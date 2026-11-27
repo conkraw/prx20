@@ -29,6 +29,7 @@ _DOMAINS = OrderedDict([
     ("PROF", "Professionalism"),
     ("ICS", "Interpersonal and Communication Skills"),
 ])
+_DATE_LABELS = {"completed_at": "Completion date", "session_date": "Session date"}
 
 
 def _text(value: object) -> str:
@@ -167,10 +168,22 @@ def _evaluation_story(evaluation: dict, styles: dict, *, undated: bool = False) 
         metadata.append("Evaluator role: " + status)
     if undated:
         metadata.append("Rotation: " + str(evaluation.get("rotation") or "Rotation not provided"))
-    if evaluation.get("date_basis") == "session_date":
-        metadata.append("Session date used because completion date is unavailable")
+    actual_basis = evaluation.get("date_basis")
+    fallback = evaluation.get("date_fallback") if "date_fallback" in evaluation else actual_basis == "session_date"
+    if fallback is True:
+        if actual_basis == "session_date":
+            metadata.append("Session date used because completion date is unavailable")
+        elif actual_basis == "completed_at":
+            metadata.append("Completion date used because session date is unavailable")
     if metadata:
         story.append(Paragraph(_text(" | ".join(metadata)), styles["eval_meta"]))
+    source_dates = []
+    if _nonempty(evaluation.get("session_date")):
+        source_dates.append("Session date: " + str(evaluation["session_date"]))
+    if _nonempty(evaluation.get("completed_at")):
+        source_dates.append("Date completed: " + str(evaluation["completed_at"]))
+    if source_dates:
+        story.append(Paragraph(_text(" | ".join(source_dates)), styles["eval_meta"]))
     sources = [str(item) for item in evaluation.get("source_files", []) if _nonempty(item)]
     provenance = []
     if sources:
@@ -207,6 +220,32 @@ def _evaluation_story(evaluation: dict, styles: dict, *, undated: bool = False) 
     return story
 
 
+def _empty_comment_message(comments: dict, date_basis: str) -> str:
+    """Use the collector's resident-specific diagnosis without exposing text."""
+    diagnostics = comments.get("diagnostics") or {}
+    status = diagnostics.get("status")
+    if status == "no_resident_evaluations":
+        return "No saved evaluations match the selected resident. Check the resident link before uploading more data."
+    if status == "no_saved_comments":
+        return "Saved evaluations were found for this resident, but none contain written feedback."
+    if status == "undated_only":
+        return ("Written feedback is saved for this resident, but it has no usable date. "
+                "It appears in the separate undated section below.")
+    if status == "outside_period":
+        message = ("Written feedback is saved for this resident, but the associated "
+                   + _DATE_LABELS[date_basis].lower() + "s fall outside the selected period.")
+        start, end = diagnostics.get("available_start"), diagnostics.get("available_end")
+        if start and end:
+            message += f" Available comment dates: {start} to {end}."
+        alternate = diagnostics.get("alternate_date_basis")
+        count = diagnostics.get("alternate_in_period_with_comments", 0)
+        if isinstance(count, int) and count > 0 and alternate in _DATE_LABELS:
+            noun = "evaluation matches" if count == 1 else "evaluations match"
+            message += f" {count} {noun} the selected period by {_DATE_LABELS[alternate].lower()}."
+        return message + " Review the date basis or widen the comment period."
+    return "No dated evaluation comments are available for this resident in the selected period."
+
+
 def build_competency_comments_pdf(report: dict, comments: dict) -> bytes:
     """Return a printable resident report without changing source data.
 
@@ -218,6 +257,18 @@ def build_competency_comments_pdf(report: dict, comments: dict) -> bytes:
     if not resident:
         raise ValueError("Select a resident before preparing the combined report.")
     if report.get("resident_key") and comments.get("resident_key") and report["resident_key"] != comments["resident_key"]:
+        raise ValueError("The comments belong to a different resident. Select the matching resident before downloading.")
+    report_basis, comments_basis = report.get("comment_date_basis"), comments.get("date_basis")
+    if report_basis and comments_basis and report_basis != comments_basis:
+        raise ValueError("The comment date basis changed. Refresh the combined report before downloading.")
+    date_basis = report_basis or comments_basis or "completed_at"
+    if date_basis not in _DATE_LABELS:
+        raise ValueError("Choose completion date or session date for the comment period.")
+    resident_key = comments.get("resident_key") or report.get("resident_key")
+    evaluations = [evaluation for rotation in comments.get("rotations", [])
+                   for evaluation in rotation.get("evaluations", [])] + list(comments.get("undated", []))
+    if resident_key and any(evaluation.get("resident_key") and evaluation["resident_key"] != resident_key
+                            for evaluation in evaluations):
         raise ValueError("The comments belong to a different resident. Select the matching resident before downloading.")
     for report_field, comment_field in (("comment_start", "start_date"), ("comment_end", "end_date")):
         if report.get(report_field) and comments.get(comment_field) and str(report[report_field]) != str(comments[comment_field]):
@@ -285,6 +336,7 @@ def build_competency_comments_pdf(report: dict, comments: dict) -> bytes:
     else:
         period = "Comment dates: all available dates"
     story.append(Paragraph(_text(period), styles["meta"]))
+    story.append(Paragraph("Comment date basis: " + _DATE_LABELS[date_basis], styles["meta"]))
     story.append(Paragraph("APPD recommendations as reported", styles["section"]))
     story.append(_score_table(report.get("scores", []), width, styles))
     story.append(Spacer(1, 6))
@@ -295,9 +347,13 @@ def build_competency_comments_pdf(report: dict, comments: dict) -> bytes:
         if note:
             story.append(Paragraph(_text(note), styles["note"]))
     story.append(Paragraph("Comments by rotation", styles["section"]))
-    story.append(Paragraph(
-        "Original comments from saved evaluations. Completion date determines the selected period. "
-        "A labeled session date is used when completion date is unavailable.", styles["note"]))
+    if date_basis == "session_date":
+        date_explanation = ("Original comments from saved evaluations. Session date determines the selected period. "
+                            "A labeled completion date is used when session date is unavailable.")
+    else:
+        date_explanation = ("Original comments from saved evaluations. Completion date determines the selected period. "
+                            "A labeled session date is used when completion date is unavailable.")
+    story.append(Paragraph(date_explanation, styles["note"]))
     rendered = 0
     for rotation in comments.get("rotations", []):
         evaluations = [evaluation for evaluation in rotation.get("evaluations", []) if _has_feedback(evaluation)]
@@ -309,8 +365,7 @@ def build_competency_comments_pdf(report: dict, comments: dict) -> bytes:
             story.extend(_evaluation_story(evaluation, styles))
             rendered += 1
     if not rendered:
-        story.append(Paragraph("No dated evaluation comments are available for this resident in the selected period.",
-                               styles["body"]))
+        story.append(Paragraph(_text(_empty_comment_message(comments, date_basis)), styles["body"]))
     undated = [evaluation for evaluation in comments.get("undated", []) if _has_feedback(evaluation)]
     if undated:
         story.extend([CondPageBreak(100), Paragraph("Comments with no usable date", styles["section"]),
