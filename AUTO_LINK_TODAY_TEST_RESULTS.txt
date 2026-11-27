@@ -1,0 +1,43 @@
+EPA TRACKER: TODAY'S DATE AND REMEMBERED RESIDENT LINKS
+Validation completed November 26, 2026
+
+Command: python3 -m pytest -q
+Result: 763 passed, 1 skipped, 1 warning, 27 subtests passed in 23.97s
+
+One legacy test is skipped because its private resident exports are intentionally
+excluded. The warning is an installed pytest-plugin deprecation, not an app error.
+
+Verified with installed application versions:
+streamlit==1.66.1
+pandas==3.1.0
+altair==6.3.0
+requests==2.34.2
+cryptography==50.0.2
+openpyxl==3.1.5
+reportlab==4.4.9
+pypdf==6.21.4
+
+This update exercises:
+- Through defaults to today's New York date for both uploads and saved reports,
+  regardless of an older or future program end date.
+- UTC midnight does not prematurely advance the local date.
+- Untouched defaults advance with the local day. Manually chosen cutoffs survive
+  reruns, successful saves, form revision changes, and midnight submissions.
+- A saved report's comments and PDF keep the saved dates until Update comments.
+  Saving then updates the heading, included feedback, and actual PDF callback.
+- Unique current names, explicit export aliases, omitted middle names, and
+  matching middle initials produce automatic resident selections.
+- Tied matches and contradictory full middle names do not auto-select a resident.
+- Saving a manual choice remembers it for later PDFs and across app sessions.
+- Source/target name changes and removed residents cause the match to be checked
+  again. Stale name-shaped keys cannot restore an obsolete exact match.
+- Invalidated memory cannot revive an older, superseded report association.
+- Case, whitespace, and First Last versus Last, First order retain valid memory.
+- Remembered links survive the existing encrypted archive encode/decode cycle.
+- Repeated identical saves retain timestamps. Conflicting concurrent remaps and
+  duplicate source names with contradictory choices are rejected atomically.
+- Existing EPA averaging, resident dates, APPD approvals, both Excel exports,
+  competency import, comment collection, and PDF output pass regression checks.
+
+No live archive or deployed Streamlit app was changed during these tests.
+All added resident names and comments are invented test data.

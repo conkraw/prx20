@@ -16,6 +16,12 @@ from epa_appd import digest
 from test_competency_import import pdf_bytes, report_text
 
 
+@pytest.fixture(autouse=True)
+def stable_local_today():
+    with patch("epa_competency_ui._today", return_value=date(2026, 11, 26)):
+        yield
+
+
 SCRIPT = '''
 import copy
 import streamlit as st
@@ -70,6 +76,14 @@ def button(app, label):
     return next(item for item in app.button if item.label == label)
 
 
+def selector(app, label):
+    return next(item for item in app.selectbox if item.label == label)
+
+
+def score_tables(app):
+    return [frame for frame in app.dataframe if "Score" in frame.value.columns]
+
+
 def upload(app, data=None, filename="synthetic_report.pdf"):
     app.file_uploader[0].set_value([(filename, data or pdf_bytes(report_text()), "application/pdf")]).run()
     assert not app.exception
@@ -86,10 +100,11 @@ def test_upload_confirm_save_view_and_download_real_streamlit():
     with patch("streamlit.download_button", wraps=st.download_button) as download:
         app = upload(app_for())
         assert not app.error
-        assert app.selectbox[0].value == "example, taylor"
+        assert selector(app, "Link comments for resident").value == "example, taylor"
+        assert selector(app, "Match comments by").value == "session_date"
         assert app.date_input[0].value == date(2026, 7, 1)
-        assert len(app.dataframe) == 6
-        for frame in app.dataframe:
+        assert len(score_tables(app)) == 6
+        for frame in score_tables(app):
             assert set(frame.value["Score"]) == {"2 - 2.5"}
         save_first(app)
         assert app.radio(key="competency_action").value == "View saved reports"
@@ -111,11 +126,11 @@ def test_upload_confirm_save_view_and_download_real_streamlit():
 
 def test_unknown_pdf_name_is_not_assigned_to_first_resident():
     app = upload(app_for(), pdf_bytes(report_text().replace("Taylor", "Jordan")))
-    assert app.selectbox[0].value == "__competency_source_name__"
+    assert selector(app, "Link comments for resident").value == "__competency_source_name__"
     save_first(app)
     saved = next(iter(app.session_state["archive"]["competency_reports"].values()))
     assert saved["resident_key"] == "jordan example"
-    assert any("No saved narrative comments" in item.value for item in app.info)
+    assert any("No saved evaluations match" in item.value for item in app.info)
 
 
 def test_ambiguous_source_name_cannot_silently_link_to_same_normalized_key():
@@ -125,11 +140,11 @@ def test_ambiguous_source_name_cannot_silently_link_to_same_normalized_key():
         "completed_at": "2026-08-02", "overall_comments": "Separate resident record.",
     }
     app = upload(app_for(state))
-    assert app.selectbox[0].value == "__competency_source_name__"
+    assert selector(app, "Link comments for resident").value == "__competency_source_name__"
     assert button(app, "Save 1 report and link comments").disabled
     assert any("More than one saved resident" in item.value for item in app.warning)
     assert not app.session_state["archive"].get("competency_reports")
-    app.selectbox[0].set_value("example, taylor").run()
+    selector(app, "Link comments for resident").set_value("example, taylor").run()
     assert not button(app, "Save 1 report and link comments").disabled
     save_first(app)
     saved = next(iter(app.session_state["archive"]["competency_reports"].values()))
@@ -143,12 +158,12 @@ def test_user_can_choose_comments_dates_and_correct_saved_resident_link():
     save_first(app)
     saved = next(iter(app.session_state["archive"]["competency_reports"].values()))
     assert saved["comment_start"] == "2025-07-01"
-    assert any("No saved narrative comments" in item.value for item in app.info)
+    assert any("The comments are saved" in item.value for item in app.info)
     match = next(box for box in app.selectbox if box.label == "Link comments for resident")
     match.set_value("other, resident")
     app.date_input[0].set_value(date(2026, 7, 1))
     app.date_input[1].set_value(date(2026, 11, 20))
-    button(app, "Save resident and dates").click().run()
+    button(app, "Update comments").click().run()
     assert not app.exception and not app.error
     saved = next(iter(app.session_state["archive"]["competency_reports"].values()))
     assert saved["resident_key"] == "other, resident"
@@ -188,15 +203,15 @@ def test_report_can_be_saved_before_evaluations_exist():
     save_first(app)
     saved = next(iter(app.session_state["archive"]["competency_reports"].values()))
     assert saved["linked_resident"] == "Taylor Example"
-    assert len(app.dataframe) == 6
-    assert any("No saved narrative comments" in item.value for item in app.info)
+    assert len(score_tables(app)) == 6
+    assert any("No saved evaluations match" in item.value for item in app.info)
 
 
 def test_upload_parse_is_reused_on_resident_selection_rerun():
     with patch("epa_competency_import.parse_competency_pdf", wraps=parse_competency_pdf) as parser:
         app = upload(app_for())
         assert parser.call_count == 1
-        app.selectbox[0].set_value("other, resident").run()
+        selector(app, "Link comments for resident").set_value("other, resident").run()
         assert not app.exception
         assert parser.call_count == 1
 
@@ -225,5 +240,89 @@ def test_saved_report_opens_without_reparsing_original_pdf():
     with patch("epa_competency_import.parse_competency_pdf", side_effect=AssertionError("unneeded parse")):
         app = app_for(state)
         assert not app.error
-        assert len(app.dataframe) == 6
+        assert len(score_tables(app)) == 6
+
+
+def late_completed_state():
+    state = ui_state()
+    state["settings"]["appd"].update(start_date="2026-09-01", end_date="2026-09-30")
+    record = state["evaluations"]["eval_one"]
+    record.update(session_date="2026-09-21", completed_at="2026-11-18T10:55:20",
+                  overall_comments="", subject_comments="", rotation="Example NICU")
+    record["responses"] = {
+        "201": {"response": "4", "comment": ""},
+        "202": {"response": "", "comment": "See below", "question_text": "Next steps"},
+        "203": {"response": "", "comment": "Fictional division feedback in the middle of the form.", "question_text": "Overall Comments:"},
+        "204": {"response": "3", "comment": ""},
+        "205": {"response": "3", "comment": ""},
+    }
+    return state
+
+
+def test_new_upload_includes_middle_comments_by_rotation_despite_late_completion():
+    with patch("streamlit.download_button", wraps=st.download_button) as download:
+        app = upload(app_for(late_completed_state()))
+        save_first(app)
+        saved = next(iter(app.session_state["archive"]["competency_reports"].values()))
+        assert saved["comment_date_basis"] == "session_date"
+        assert any("Fictional division feedback" in item.value for item in app.text)
+        assert not any("No saved narrative comments" in item.value for item in app.info)
+        check = next(frame.value for frame in app.dataframe if "Date Completed" in frame.value)
+        assert check.iloc[0]["Date Completed"] == "2026-11-18"
+        assert check.iloc[0]["Session Date"] == "2026-09-21"
+        assert check.iloc[0]["Status"] == "Shown"
+        callback = next(call.kwargs["data"] for call in reversed(download.call_args_list)
+                        if call.args[0] == "Download combined report (.pdf)")
+        text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(callback())).pages)
+        assert "Fictional division feedback in the middle of the form." in text
+        assert "2026-09-21" in text and "2026-11-18" in text
+
+
+def test_legacy_completion_filter_explains_missing_comments_and_can_be_changed():
+    data = pdf_bytes(report_text())
+    parsed = parse_competency_pdf(data)
+    entry = linked_report(parsed, data, resident_key="example, taylor", resident_name="Example, Taylor",
+                          start_date="2026-09-01", end_date="2026-09-30")
+    entry.pop("comment_date_basis")
+    state, _ = save_report_links(late_completed_state(), [entry], {entry["id"]: digest(None)})
+    app = app_for(state)
+    assert selector(app, "Match comments by").value == "completed_at"
+    assert any("The comments are saved" in item.value for item in app.info)
+    assert any("Rotation / Session Date" in item.value and "excluded" in item.value for item in app.info)
+    assert not any("Fictional division feedback" in item.value for item in app.text)
+    selector(app, "Match comments by").set_value("session_date")
+    app.date_input[1].set_value(date(2026, 9, 30))
+    button(app, "Update comments").click().run()
+    assert not app.exception and not app.error
+    assert any("Fictional division feedback" in item.value for item in app.text)
+    saved = next(iter(app.session_state["archive"]["competency_reports"].values()))
+    assert saved["comment_date_basis"] == "session_date"
+    assert saved["comment_start"] == "2026-09-01" and saved["comment_end"] == "2026-09-30"
+
+
+def test_missing_middle_name_automatically_selects_unique_resident_and_links_comments():
+    state = ui_state()
+    record = state["evaluations"].pop("eval_one")
+    record.update(resident="Example, Taylor Morgan", resident_key="example, taylor morgan")
+    state["evaluations"]["eval_one"] = record
+    app = upload(app_for(state))
+    assert selector(app, "Link comments for resident").value == "example, taylor morgan"
+    assert any("Best match selected" in item.value for item in app.caption)
+    save_first(app)
+    saved = next(iter(app.session_state["archive"]["competency_reports"].values()))
+    assert saved["resident_key"] == "example, taylor morgan"
+    assert any("Clear updates to families" in item.value for item in app.text)
+
+
+def test_switching_only_comment_date_basis_invalidates_cached_comment_selection():
+    app = upload(app_for(late_completed_state()))
+    app.date_input[1].set_value(date(2026, 9, 30))
+    save_first(app)
+    assert any("Fictional division feedback" in item.value for item in app.text)
+    selector(app, "Match comments by").set_value("completed_at")
+    button(app, "Update comments").click().run()
+    assert not app.exception and not app.error
+    assert not any("Fictional division feedback" in item.value for item in app.text)
+    assert any("The comments are saved" in item.value for item in app.info)
+
 

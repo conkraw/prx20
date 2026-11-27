@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 
 from epa_appd import config_for, digest, residents_in
 from epa_competency_reports import (
-    linked_report, matching_residents, original_pdf, report_filename, report_id, report_label,
-    resident_link_candidates, save_report_links, saved_reports, suggested_resident,
+    choose_resident_link, linked_report, original_pdf, report_filename, report_id, report_label,
+    resident_link_expectations, save_report_links, saved_reports,
 )
 from epa_core import normalize_key
 from epa_performance import cached_result
@@ -34,18 +35,22 @@ def _open_saved(report_key: str) -> None:
 def _resident_selector(state: dict, report: dict, key: str, *, existing: bool = False) -> tuple[str, str]:
     names = residents_in(state)
     source_name = str(report.get("resident") or "").strip()
-    candidates = resident_link_candidates(state, source_name)
-    ambiguous = len(matching_residents(state, source_name)) > 1
+    choice = choose_resident_link(state, source_name, existing_report=report if existing else None)
+    candidates = choice.get("candidates", [])
+    ambiguous = choice.get("method") == "ambiguous"
     candidate_keys = [row["resident_key"] for row in candidates if row["resident_key"] in names]
     options = [SOURCE_NAME] + candidate_keys + [name for name in names if name not in candidate_keys]
-    chosen = report.get("resident_key") if existing else suggested_resident(state, source_name)
+    chosen = choice.get("resident_key")
     index = options.index(chosen) if chosen in options else 0
     def label(value):
         if value == SOURCE_NAME:
             return "Choose the matching resident" if ambiguous else f"{source_name} (name from PDF)"
         return names[value]
+    # A changed best match or remembered choice needs a fresh widget default.
+    # Manual edits keep their selection across normal reruns of this proposal.
+    choice_key = digest([chosen, choice.get("method"), names.get(chosen)])[:12]
     selected = st.selectbox("Link comments for resident", options, index=index,
-                            format_func=label, key=key)
+                            format_func=label, key=key + "_" + choice_key)
     if selected == SOURCE_NAME:
         if ambiguous:
             st.warning("More than one saved resident matches the name or ID in this PDF. Choose the correct resident before saving.")
@@ -55,15 +60,41 @@ def _resident_selector(state: dict, report: dict, key: str, *, existing: bool = 
             st.info("Saved resident names that may match this PDF: " + ", ".join(row["resident"] for row in possible) + ". Choose the correct saved resident above to include those comments.")
         st.caption("Uses the name in this PDF. If evaluations use a different name or name order, choose that resident above.")
         return normalize_key(source_name), source_name
-    if suggested_resident(state, source_name) != selected:
-        st.caption(f"Check the link: the PDF says {source_name}, and comments will come from {names[selected]}.")
+    if selected == chosen:
+        if choice.get("method") in {"remembered", "previous_report", "existing_report"}:
+            st.caption("Using your saved resident link. You can change it here.")
+        else:
+            st.caption(f"Best match selected: {names[selected]}. Saving will remember this link.")
+    else:
+        st.caption(f"Saving will remember {source_name} as {names[selected]} for future reports.")
     return selected, names[selected]
 
 
-def _date_choices(start, end, prefix: str):
+def _today() -> date:
+    """Use the residency's local calendar day, including around UTC midnight."""
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
+def _date_choices(start, prefix: str, *, draft_key: str | None = None):
+    today = _today()
+    draft_key = draft_key or prefix
+    drafts = st.session_state.setdefault("_competency_through_drafts", {})
+    draft = drafts.get(draft_key, {})
+    if draft.get("day") and draft["day"] != today.isoformat():
+        # A form opened yesterday can submit a new cutoff after midnight.
+        # Read that old widget's submitted value before rotating its key.
+        previous_value = as_date(st.session_state.get(prefix + "_end_" + draft["day"]))
+        if previous_value is not None and previous_value != as_date(draft.get("value")):
+            draft = {"value": previous_value.isoformat(), "manual": True, "day": draft["day"]}
+    # An untouched default advances with the local day. A deliberately chosen
+    # cutoff survives reruns and saves, including the form's revision change.
+    default_end = as_date(draft.get("value")) if draft.get("manual") else today
+    default_end = default_end or today
     left, right = st.columns(2)
-    start = left.date_input("Comments from", value=as_date(start) or date.today(), key=prefix + "_start")
-    end = right.date_input("Through", value=as_date(end) or date.today(), key=prefix + "_end")
+    start = left.date_input("Comments from", value=as_date(start) or today, key=prefix + "_start")
+    end = right.date_input("Through", value=default_end, key=prefix + "_end_" + today.isoformat())
+    manual = bool(draft.get("manual")) if end == as_date(draft.get("value")) else end != today
+    drafts[draft_key] = {"value": end.isoformat(), "manual": manual, "day": today.isoformat()}
     return start, end
 
 
@@ -220,8 +251,8 @@ def _upload_reports(state: dict, store, commit) -> None:
         return
     cfg = config_for(state)
     batch_key = digest(sorted(seen))[:16]
-    st.info("These PDFs do not identify a calendar year. Choose the dates for the comments you want attached. The dates below start from your current program setup.")
-    start, end = _date_choices(cfg["start_date"], cfg["end_date"], "competency_batch_" + batch_key)
+    st.info("Choose the dates for the comments you want attached. Comments from starts with your program's start date. Through starts at today's date.")
+    start, end = _date_choices(cfg["start_date"], "competency_batch_" + batch_key)
     date_basis = _date_basis_choice("session_date", "competency_batch_" + batch_key)
     st.caption("These comment dates apply to every report in this upload.")
     selections = []
@@ -235,7 +266,8 @@ def _upload_reports(state: dict, store, commit) -> None:
                 st.caption("This PDF is already saved. Saving again updates its resident link and comment dates without creating a duplicate.")
             choice_report = dict(report)
             if rid in current:
-                choice_report.update(resident_key=current[rid].get("resident_key"))
+                choice_report.update(resident_key=current[rid].get("resident_key"),
+                                     linked_resident=current[rid].get("linked_resident"))
             resident_key, resident_name = _resident_selector(state, choice_report, "competency_link_" + rid,
                                                             existing=rid in current)
             selections.append((report, data, resident_key, resident_name))
@@ -252,9 +284,14 @@ def _upload_reports(state: dict, store, commit) -> None:
             entries = [linked_report(report, data, resident_key=key, resident_name=name,
                                      start_date=start, end_date=end, date_basis=date_basis) for report, data, key, name in selections]
             expected = {entry["id"]: digest(current.get(entry["id"])) for entry in entries}
+            expected_links = resident_link_expectations(state, [entry["resident"] for entry in entries])
             def apply(latest):
-                return save_report_links(latest, entries, expected)
+                return save_report_links(latest, entries, expected, expected_links=expected_links)
             if commit(store, apply):
+                drafts = st.session_state.setdefault("_competency_through_drafts", {})
+                batch_draft = drafts.get("competency_batch_" + batch_key, {})
+                for entry in entries:
+                    drafts["saved_report_" + entry["id"]] = copy.deepcopy(batch_draft)
                 st.session_state["notice"] = "Reports saved. Your combined reports are ready to view and download."
                 st.session_state["_competency_upload_revision"] = int(st.session_state.get("_competency_upload_revision", 0)) + 1
                 _open_saved(entries[0]["id"])
@@ -307,16 +344,19 @@ def _edit_comment_selection(state: dict, report: dict, selected: str, store, com
         st.write("Resident and dates for comments")
         st.caption("PDF name: " + str(report.get("resident") or "Not listed"))
         rkey, name = _resident_selector(state, report, "competency_edit_resident_" + revision, existing=True)
-        start, end = _date_choices(report["comment_start"], report["comment_end"], "competency_edit_" + revision)
+        start, end = _date_choices(report["comment_start"], "competency_edit_" + revision,
+                                   draft_key="saved_report_" + selected)
         date_basis = _date_basis_choice(report.get("comment_date_basis", "completed_at"), "competency_edit_" + revision)
         submitted = st.form_submit_button("Update comments", type="primary")
+        st.caption("Through starts at today's date. Update comments applies the resident and dates to the report and PDF.")
     if submitted:
         try:
             entry = linked_report(report, original_pdf(report), resident_key=rkey, resident_name=name,
                                   start_date=start, end_date=end, date_basis=date_basis)
             expected = {selected: digest(report)}
+            expected_links = resident_link_expectations(state, [report["resident"]])
             def apply(latest):
-                return save_report_links(latest, [entry], expected)
+                return save_report_links(latest, [entry], expected, expected_links=expected_links)
             if commit(store, apply):
                 st.session_state["notice"] = "Resident and date selection saved. Comments updated."
                 _open_saved(selected)
